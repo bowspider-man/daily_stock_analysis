@@ -157,7 +157,7 @@ daily_stock_analysis/
 | Secret 名称 | 说明 | 必填 |
 |------------|------|:----:|
 | `STOCK_LIST` | 自选股代码，如 `600519,300750,002594,7203.T,005930.KS`；推荐使用英文逗号，中文逗号、顿号、分号、空格和换行会被识别并规范为英文逗号 | ✅ |
-| `ANSPIRE_API_KEYS` | [Anspire AI Search](https://aisearch.anspire.cn/) 针对中文内容特别优化；同一 Key 可用于搜索与 Anspire 大模型网关的兜底示例（是否可用以控制台与账号权限为准） | 推荐 |
+| `ANSPIRE_API_KEYS` | [Anspire AI Search](https://aisearch.anspire.cn/) 针对中文内容特别优化；同一 Key 可用于搜索与 Anspire 大模型网关的兜底示例。已配置 Longbridge 时，**已识别港股/美股的个股新闻会优先由 Longbridge 获取**；Anspire 仅在 Longbridge 无结果、不可用或不支持该代码格式时作为回退。 | 推荐 |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/github-daily-stock-analysis) 搜索引擎结果补强，适合实时金融新闻 | 推荐 |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/) 搜索 API（新闻搜索） | 可选 |
 | `BOCHA_API_KEYS` | [博查搜索](https://open.bocha.cn/) Web Search API（中文搜索优化，支持AI摘要，多个key用逗号分隔） | 可选 |
@@ -191,6 +191,8 @@ daily_stock_analysis/
 妙想资金流仅使用明确的主力净流入金额指标；收盘价、占比及缺失金额不会作为资金流回退值。最新交易日金额缺失时保持未知，5/10 日窗口包含缺失金额时不输出合计，不使用更早日期补位。
 
 > **GitHub Actions：** 仓库自带 `00-daily-analysis.yml` 已把 `TUSHARE_TOKEN`、`TICKFLOW_API_KEY` / `TICKFLOW_*` 和上表中的 `LONGBRIDGE_*` 映射到任务环境。TickFlow 的 API Key 建议放在 **Secrets**，优先级、复权和批量开关可放在 **Variables** 或 **Secrets**。Longbridge OAuth 方式需要一个 client_id（优先 `LONGBRIDGE_OAUTH_CLIENT_ID`；留空且无 Legacy Access Token 时使用 `LONGBRIDGE_APP_KEY` 兼容），并把本机 `~/.longbridge/openapi/tokens/<client_id>` 文件 base64 后保存为 Secret `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64`；Legacy 方式仍可配置 `LONGBRIDGE_APP_KEY`、`LONGBRIDGE_APP_SECRET`、`LONGBRIDGE_ACCESS_TOKEN`。可选接入点变量（如 `LONGBRIDGE_REGION`）可放在 **Variables** 或 **Secrets**。
+
+> **Longbridge 新闻优先级：** 在已识别的港股/美股个股分析中，Longbridge 的证券新闻为首选；返回为空、鉴权/SDK 不可用或代码不支持时，才依次尝试已配置的 Anspire、SerpAPI、Tavily、博查、Brave、MiniMax 或 SearXNG。若只配置 Longbridge，以上情形会明确显示无可用新闻，不会静默调用其他搜索服务。行业、宏观、风险等关键词泛搜索仍由已配置的通用搜索服务提供，因为当前正式 Python SDK 仅稳定公开证券新闻接口。
 
 > **TUSHARE_HTTP_URL 在每日 workflow 中的映射：** `00-daily-analysis.yml` 已显式映射 `TUSHARE_HTTP_URL`（采用 `vars.TUSHARE_HTTP_URL || secrets.TUSHARE_HTTP_URL` 优先级，与仓库现有 `TICKFLOW_PRIORITY` 等非敏感配置取值策略一致）。该地址属"接入地址"配置而非凭据，建议放 **Variables** 便于团队 review 与版本可审计。注意：真实的优先级是 `vars` 非空即胜出，**Secrets 中的同名变量无法覆盖非空 Variables**，两者中只有 vars 为空时 secrets 才被采用，请按这个真实语义做安全建模。GitHub 把 Variables 与 Secrets 设计为两套独立的写权限模型：任何对 repository Variables 有写权限的人或自动化，都可以在不读取、不修改 Secrets 的情况下，通过设置一个非空 Variable 来改写运行时端点（包括将 `TUSHARE_TOKEN` 和完整请求体指向攻击者控制的地址）；Secrets 仅保护值的机密性，并不自动提供"端点完整性"或"优先级覆盖"保障。如确需对端点施加更强的访问控制，请使用 GitHub Environment protection rules、CODEOWNERS、branch protection 或独立的部署审批流程，**不要把"只放 Secrets 而 Variables 留空"当作防改护栏**。未设置或留空时 fetcher 仍走官方 `http://api.tushare.pro` 端点，不会因为本变量缺失而报错。
 

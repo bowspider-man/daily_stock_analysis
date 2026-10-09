@@ -47,7 +47,8 @@ jobs:
       - name: 设置 Python 环境
         uses: actions/setup-python@v6
         with:
-          python-version: '3.11'
+          # Longbridge content/news requires the current 4.x SDK on Linux.
+          python-version: '3.12'
           cache: 'pip'
       
       - name: 安装依赖

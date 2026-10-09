@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 已识别港股/美股个股新闻优先使用 Longbridge Content API；无结果、不可用或不支持代码时才回退到已配置的搜索服务，Longbridge 单独配置时明确披露无可用新闻。
+- [改进] 每日 GitHub Actions 升级至 Python 3.12，以使用 Longbridge 4.x SDK 的 Content API。
 - [修复] ETF 轮动按真实 A 股交易日历保留全池缺报价日期及末尾缺口，防止调仓顺延、周末信号提前和动量窗口缩短；历史日历不可用时明确停止计算。
 
 - [修复] ETF 轮动回测在行情缺口后结算完整持仓损益，缺报价日不虚构成交，防守资产缺报价时使用现金；统一参数扫描与主回测的行情处理，限定前复权来源，并跳过无关个股列表校验。

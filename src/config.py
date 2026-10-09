@@ -3095,8 +3095,20 @@ class Config:
 
     def has_search_capability_enabled(self) -> bool:
         """Whether any search provider is configured or SearXNG fallback is enabled."""
+        # Longbridge is the preferred security-news source.  Its credentials
+        # are configured in the data-source section rather than as a search
+        # API key, so include both OAuth and Legacy forms here.
+        has_longbridge_news = bool(
+            self.longbridge_oauth_client_id
+            or (
+                self.longbridge_app_key
+                and self.longbridge_app_secret
+                and self.longbridge_access_token
+            )
+        )
         return bool(
-            self.anspire_api_keys
+            has_longbridge_news
+            or self.anspire_api_keys
             or self.bocha_api_keys
             or self.minimax_api_keys
             or self.tavily_api_keys

@@ -287,6 +287,94 @@ class SearchResponse:
         return "\n".join(lines)
 
 
+class LongbridgeNewsProvider:
+    """Adapt Longbridge's security-news API to the common search contract.
+
+    This provider intentionally serves *identified securities* only.  The
+    official SDK exposes ``ContentContext.news(symbol)`` for that purpose;
+    broad keyword search remains the responsibility of the configured web
+    search providers.  Callers can therefore distinguish a genuine empty
+    Longbridge result from a provider that is unavailable.
+    """
+
+    name = "Longbridge"
+
+    def __init__(self) -> None:
+        # Reuse the repository's existing OAuth/Legacy credential handling and
+        # headless token-cache restoration instead of introducing a second
+        # credential family for news.
+        from data_provider.longbridge_fetcher import LongbridgeFetcher
+
+        self._fetcher = LongbridgeFetcher()
+
+    @property
+    def is_available(self) -> bool:
+        return self._fetcher.has_configured_credentials()
+
+    def search_stock(
+        self,
+        stock_code: str,
+        stock_name: str,
+        max_results: int,
+    ) -> SearchResponse:
+        from data_provider.longbridge_fetcher import _to_longbridge_symbol
+
+        symbol = _to_longbridge_symbol(stock_code)
+        query = f"{stock_name} {stock_code} 最新消息".strip()
+        if not symbol:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=True,
+                error_message="Longbridge news does not support this symbol format",
+            )
+
+        started_at = time.time()
+        try:
+            # _get_ctx also restores LONGBRIDGE_OAUTH_TOKEN_CACHE_B64 in
+            # GitHub Actions.  ContentContext needs the same Config object.
+            if self._fetcher._get_ctx() is None or self._fetcher._config is None:
+                raise RuntimeError("Longbridge authentication is unavailable")
+            from longbridge.openapi import ContentContext
+
+            items = ContentContext(self._fetcher._config).news(symbol)
+            results: List[SearchResult] = []
+            for item in list(items or [])[:max_results]:
+                title = str(getattr(item, "title", "") or "").strip()
+                url = str(getattr(item, "url", "") or "").strip()
+                if not title or not url:
+                    continue
+                results.append(SearchResult(
+                    title=title,
+                    snippet=str(getattr(item, "description", "") or "").strip(),
+                    url=url,
+                    source="Longbridge",
+                    # The API documents this as Unix seconds; the existing
+                    # news filter normalizes it before ranking and display.
+                    published_date=str(getattr(item, "published_at", "") or "").strip() or None,
+                ))
+            response = SearchResponse(
+                query=query,
+                results=results,
+                provider=self.name,
+                success=True,
+                search_time=time.time() - started_at,
+            )
+            response.mark_retrieved()
+            return response
+        except Exception as exc:
+            logger.warning("[Longbridge] security news query failed for %s: %s", symbol, exc)
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=str(exc),
+                search_time=time.time() - started_at,
+            )
+
+
 class BaseSearchProvider(ABC):
     """搜索引擎基类"""
     
@@ -2444,6 +2532,7 @@ class SearchService:
             "news_strategy_profile": news_strategy_profile,
         }
         self._providers: List[BaseSearchProvider] = []
+        self._longbridge_news_provider = LongbridgeNewsProvider()
         self.news_max_age_days = max(1, news_max_age_days)
         raw_profile = (news_strategy_profile or "short").strip().lower()
         self.news_strategy_profile = normalize_news_strategy_profile(news_strategy_profile)
@@ -2505,8 +2594,10 @@ class SearchService:
             self._providers.insert(0, AnspireSearchProvider(anspire_keys))
             logger.info(f"已配置 Anspire Search 搜索，共 {len(anspire_keys)} 个 API Key")
             
-        if not self._providers:
+        if not self._providers and not self._longbridge_news_provider.is_available:
             logger.warning("未配置任何搜索能力，新闻搜索功能将不可用")
+        elif self._longbridge_news_provider.is_available:
+            logger.info("已配置 Longbridge 个股新闻，个股新闻将优先使用该来源")
 
         # In-memory search result cache: {cache_key: (timestamp, SearchResponse)}
         self._cache: Dict[str, Tuple[float, 'SearchResponse']] = {}
@@ -2693,7 +2784,7 @@ class SearchService:
     @property
     def is_available(self) -> bool:
         """检查是否有可用的搜索引擎"""
-        return any(p.is_available for p in self._providers)
+        return self._longbridge_news_provider.is_available or any(p.is_available for p in self._providers)
 
     def _cache_key(self, query: str, max_results: int, days: int) -> str:
         """Build a cache key from query parameters."""
@@ -4129,6 +4220,60 @@ class SearchService:
             return cached
 
         try:
+            # Longbridge is the primary source for an identified security.  A
+            # successful but empty response deliberately falls through to the
+            # user-configured web providers; if none are configured the final
+            # response makes the absence of usable news explicit.
+            if self._longbridge_news_provider.is_available:
+                started_at = time.monotonic()
+                response = self._longbridge_news_provider.search_stock(
+                    stock_code,
+                    stock_name,
+                    provider_max_results,
+                )
+                filtered_response = self._filter_news_response(
+                    response,
+                    search_days=search_days,
+                    max_results=provider_max_results,
+                    log_scope=f"{stock_code}:Longbridge:stock_news",
+                )
+                if filtered_response.success and filtered_response.results:
+                    ranked_response = self._rank_news_response(
+                        filtered_response,
+                        stock_code=stock_code,
+                        stock_name=stock_name,
+                        prefer_chinese=prefer_chinese,
+                        max_results=provider_max_results,
+                        log_scope=f"{stock_code}:Longbridge:stock_news",
+                    )
+                    limited_response = self._limit_search_response(
+                        self._filter_ranked_news_for_context(
+                            ranked_response,
+                            log_scope=f"{stock_code}:Longbridge:stock_news",
+                        ),
+                        max_results=max_results,
+                    )
+                    if limited_response.results:
+                        self._record_news_search_run(
+                            provider=self._longbridge_news_provider.name,
+                            operation="search_stock_news",
+                            success=True,
+                            latency_ms=self._elapsed_ms(started_at),
+                            record_count=len(limited_response.results),
+                        )
+                        self._put_cache(cache_key, limited_response)
+                        return limited_response
+                self._record_news_search_run(
+                    provider=self._longbridge_news_provider.name,
+                    operation="search_stock_news",
+                    success=False,
+                    latency_ms=self._elapsed_ms(started_at),
+                    record_count=0,
+                    error_type="NoUsableNews",
+                    error_message=response.error_message or "Longbridge returned no usable news",
+                )
+                logger.info("Longbridge 无可用个股新闻，尝试已配置的搜索回退源")
+
             # 依次尝试各个搜索引擎（若过滤后为空，继续尝试下一引擎）
             had_provider_success = False
             best_ranked_response: Optional[SearchResponse] = None
