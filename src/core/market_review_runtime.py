@@ -95,7 +95,7 @@ def build_market_review_runtime(
         search_service = SearchService(
             bocha_keys=getattr(config, "bocha_api_keys", None),
             tavily_keys=getattr(config, "tavily_api_keys", None),
-            anspire_keys=getattr(config, "anspire_api_keys", None),
+            anspire_keys=getattr(config, "anspire_search_api_keys", None),
             brave_keys=getattr(config, "brave_api_keys", None),
             serpapi_keys=getattr(config, "serpapi_keys", None),
             minimax_keys=getattr(config, "minimax_api_keys", None),

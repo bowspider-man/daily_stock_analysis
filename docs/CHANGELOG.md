@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [改进] 将 Anspire 搜索配置拆分为显式的 `ANSPIRE_SEARCH_API_KEYS`；`ANSPIRE_API_KEYS` 仅保留为 Anspire LLM 兼容兜底，不再自动产生联网搜索请求。
 - [新功能] 已识别港股/美股个股新闻优先使用 Longbridge Content API；无结果、不可用或不支持代码时才回退到已配置的搜索服务，Longbridge 单独配置时明确披露无可用新闻。
 - [改进] 每日 GitHub Actions 升级至 Python 3.12，以使用 Longbridge 4.x SDK 的 Content API。
 - [修复] ETF 轮动按真实 A 股交易日历保留全池缺报价日期及末尾缺口，防止调仓顺延、周末信号提前和动量窗口缩短；历史日历不可用时明确停止计算。

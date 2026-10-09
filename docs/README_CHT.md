@@ -83,7 +83,7 @@
 
 | Secret 名稱 | 說明 | 必填 |
 |-------------|------|:----:|
-| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API Key，一 Key 同時啟用全球熱門大模型和聯網搜尋，含本項目免費額度 | **推薦** |
+| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) LLM API Key，用於 Anspire 相容兜底；不啟用聯網搜尋 | **推薦** |
 | `AIHUBMIX_KEY` | [AIHubMix](https://inferera.com/?aff=CfMq) API Key，一 Key 切換使用全系模型，本項目可享 10% 優惠 | **推薦** |
 | `GEMINI_API_KEY` | Google Gemini API Key | 可選 |
 | `ANTHROPIC_API_KEY` | Anthropic Claude API Key | 可選 |
@@ -117,7 +117,7 @@
 
 | Secret 名稱 | 說明 | 必填 |
 |-------------|------|:----:|
-| `ANSPIRE_API_KEYS` | [Anspire AI Search](https://open.anspire.cn/dsa?share_code=QFBC0FYC)：匯聚全球輿情信息，適配 A股、美股、港股等新聞和輿情檢索；同一 Key 可複用大模型服務；本項目新用戶可獲得 30 元等額的免費點數 | **推薦** |
+| `ANSPIRE_SEARCH_API_KEYS` | [Anspire AI Search](https://open.anspire.cn/dsa?share_code=QFBC0FYC)：顯式啟用 A 股、美股、港股新聞與輿情檢索；未設定時不會呼叫 Anspire 搜尋 | 可選 |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/github-daily-stock-analysis)：搜尋引擎結果補強，適合即時金融新聞 | **推薦** |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/)：通用新聞搜尋 API | 可選 |
 | `BOCHA_API_KEYS` | [博查搜尋](https://open.bocha.cn/)：中文搜尋優化，支援 AI 摘要 | 可選 |

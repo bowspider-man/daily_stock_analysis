@@ -5063,7 +5063,9 @@ def get_search_service() -> SearchService:
                 _search_service = SearchService(
                     bocha_keys=config.bocha_api_keys,
                     tavily_keys=config.tavily_api_keys,
-                    anspire_keys=config.anspire_api_keys,
+                    # Keep ANSPIRE_API_KEYS scoped to the LLM compatibility
+                    # fallback. Web/news search is an explicit opt-in.
+                    anspire_keys=config.anspire_search_api_keys,
                     brave_keys=config.brave_api_keys,
                     serpapi_keys=config.serpapi_keys,
                     minimax_keys=config.minimax_api_keys,

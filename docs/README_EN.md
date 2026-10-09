@@ -83,7 +83,7 @@ Start with one provider and one API key. For multi-model routing, image recognit
 
 | Secret Name | Description | Required |
 |-------------|-------------|:--------:|
-| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) API key, one key for popular LLMs and web search with free quota for this project | **Recommended** |
+| `ANSPIRE_API_KEYS` | [Anspire](https://open.anspire.cn/dsa?share_code=QFBC0FYC) LLM API key for the Anspire-compatible fallback; it does not enable web search | **Recommended** |
 | `AIHUBMIX_KEY` | [AIHubMix](https://inferera.com/?aff=CfMq) API key, one key for multiple model families and a 10% top-up discount for this project | **Recommended** |
 | `GEMINI_API_KEY` | Google Gemini API key | Optional |
 | `ANTHROPIC_API_KEY` | Anthropic Claude API key | Optional |
@@ -117,7 +117,7 @@ News search strongly improves sentiment, announcements, events, and catalyst qua
 
 | Secret Name | Description | Required |
 |-------------|-------------|:--------:|
-| `ANSPIRE_API_KEYS` | [Anspire AI Search](https://open.anspire.cn/dsa?share_code=QFBC0FYC), global market-sentiment aggregation tuned for news and sentiment search across A-share, US, and Hong Kong markets; the same key also works for the Anspire LLM service; new users of this project receive free credits worth CNY 30 | **Recommended** |
+| `ANSPIRE_SEARCH_API_KEYS` | [Anspire AI Search](https://open.anspire.cn/dsa?share_code=QFBC0FYC), an explicit opt-in for news and sentiment search across A-share, US, and Hong Kong markets | Optional |
 | `SERPAPI_API_KEYS` | [SerpAPI](https://serpapi.com/github-daily-stock-analysis), search-engine results for realtime financial news | **Recommended** |
 | `TAVILY_API_KEYS` | [Tavily](https://tavily.com/), general news search API | Optional |
 | `BOCHA_API_KEYS` | [Bocha](https://open.bocha.cn/), Chinese search with AI summaries | Optional |

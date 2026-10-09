@@ -41,6 +41,7 @@ class LLMChannelConfigTestCase(unittest.TestCase):
             config = Config._load_from_env()
 
         self.assertEqual(config.anspire_api_keys, ["sk-anspire-test-value"])
+        self.assertEqual(config.anspire_search_api_keys, [])
         self.assertEqual(config.openai_api_keys, ["sk-anspire-test-value"])
         self.assertEqual(config.openai_base_url, ANSPIRE_LLM_BASE_URL_DEFAULT)
         self.assertEqual(config.litellm_model, f"openai/{ANSPIRE_LLM_MODEL_DEFAULT}")

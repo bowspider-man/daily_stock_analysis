@@ -3,7 +3,7 @@
 Anspire Search 搜索引擎测试套件
 
 测试覆盖范围:
-1. 配置加载测试 - 验证 anspire_api_keys 是否正确从环境变量加载
+1. 配置加载测试 - 验证 anspire_search_api_keys 是否正确从环境变量加载
 2. 服务初始化测试 - 验证 SearchService 是否正确初始化 AnspireSearchProvider
 3. API 调用测试 - 实际调用 Anspire API 验证返回结果
 4. 故障转移测试 - 验证无效 Key 时的错误处理和降级机制
@@ -12,11 +12,11 @@ Anspire Search 搜索引擎测试套件
 运行方式:
 ```bash
 # Windows PowerShell
-$env:ANSPIRE_API_KEYS="your_test_api_key"
+$env:ANSPIRE_SEARCH_API_KEYS="your_test_api_key"
 python -m pytest tests/test_anspire_search.py -v
 
 # Linux/Mac
-export ANSPIRE_API_KEYS="your_test_api_key"
+export ANSPIRE_SEARCH_API_KEYS="your_test_api_key"
 python -m pytest tests/test_anspire_search.py -v
 ```
 """
@@ -73,11 +73,11 @@ class TestAnspireConfigLoading(unittest.TestCase):
     def setUp(self):
         """保存并清除环境变量（不操作 .env 文件）"""
         # ✅ 保存原始值，测试后恢复
-        self._original_anspire_keys = os.environ.get('ANSPIRE_API_KEYS')
+        self._original_anspire_search_keys = os.environ.get('ANSPIRE_SEARCH_API_KEYS')
         
         # 清除环境变量
-        if 'ANSPIRE_API_KEYS' in os.environ:
-            del os.environ['ANSPIRE_API_KEYS']
+        if 'ANSPIRE_SEARCH_API_KEYS' in os.environ:
+            del os.environ['ANSPIRE_SEARCH_API_KEYS']
         
         # 重置 Config 单例
         Config._Config__instance = None
@@ -86,48 +86,48 @@ class TestAnspireConfigLoading(unittest.TestCase):
     def tearDown(self):
         """恢复原始环境变量"""
         # ✅ 恢复原始值
-        if self._original_anspire_keys is not None:
-            os.environ['ANSPIRE_API_KEYS'] = self._original_anspire_keys
-        elif 'ANSPIRE_API_KEYS' in os.environ:
-            del os.environ['ANSPIRE_API_KEYS']
+        if self._original_anspire_search_keys is not None:
+            os.environ['ANSPIRE_SEARCH_API_KEYS'] = self._original_anspire_search_keys
+        elif 'ANSPIRE_SEARCH_API_KEYS' in os.environ:
+            del os.environ['ANSPIRE_SEARCH_API_KEYS']
         
         # 重置 Config 单例
         Config._Config__instance = None
         reset_search_service()
 
     def test_anspire_keys_loaded_from_env(self):
-        """Test that ANSPIRE_API_KEYS is correctly parsed from environment."""
+        """Test that ANSPIRE_SEARCH_API_KEYS is correctly parsed from environment."""
         # ✅ 使用 patch.dict 临时设置，测试后自动恢复
-        with patch.dict(os.environ, {'ANSPIRE_API_KEYS': 'key1,key2,key3'}):
+        with patch.dict(os.environ, {'ANSPIRE_SEARCH_API_KEYS': 'key1,key2,key3'}):
             config = Config._load_from_env()
             
-            self.assertEqual(len(config.anspire_api_keys), 3)
-            self.assertIn('key1', config.anspire_api_keys)
-            self.assertIn('key2', config.anspire_api_keys)
-            self.assertIn('key3', config.anspire_api_keys)
+            self.assertEqual(len(config.anspire_search_api_keys), 3)
+            self.assertIn('key1', config.anspire_search_api_keys)
+            self.assertIn('key2', config.anspire_search_api_keys)
+            self.assertIn('key3', config.anspire_search_api_keys)
 
     def test_anspire_keys_single_key(self):
         """Test single API Key parsing."""
-        with patch.dict(os.environ, {'ANSPIRE_API_KEYS': 'single_key_test'}):
+        with patch.dict(os.environ, {'ANSPIRE_SEARCH_API_KEYS': 'single_key_test'}):
             config = Config._load_from_env()
             
-            self.assertEqual(len(config.anspire_api_keys), 1)
-            self.assertEqual(config.anspire_api_keys[0], 'single_key_test')
+            self.assertEqual(len(config.anspire_search_api_keys), 1)
+            self.assertEqual(config.anspire_search_api_keys[0], 'single_key_test')
 
     def test_anspire_keys_empty_env(self):
         """Test empty environment variable handling."""
-        with patch.dict(os.environ, {'ANSPIRE_API_KEYS': ''}):
+        with patch.dict(os.environ, {'ANSPIRE_SEARCH_API_KEYS': ''}):
             config = Config._load_from_env()
             
-            self.assertEqual(len(config.anspire_api_keys), 0)
+            self.assertEqual(len(config.anspire_search_api_keys), 0)
 
     def test_anspire_keys_whitespace_handling(self):
         """Test whitespace trimming in API Keys."""
-        with patch.dict(os.environ, {'ANSPIRE_API_KEYS': ' key1 , key2 , key3 '}):
+        with patch.dict(os.environ, {'ANSPIRE_SEARCH_API_KEYS': ' key1 , key2 , key3 '}):
             config = Config._load_from_env()
             
-            self.assertEqual(len(config.anspire_api_keys), 3)
-            self.assertEqual(config.anspire_api_keys, ['key1', 'key2', 'key3'])
+            self.assertEqual(len(config.anspire_search_api_keys), 3)
+            self.assertEqual(config.anspire_search_api_keys, ['key1', 'key2', 'key3'])
 
 
 class TestAnspireSearchProvider(unittest.TestCase):
@@ -460,7 +460,11 @@ class TestAnspireIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         """Check if API Key is configured and valid."""
-        cls.api_keys = [k.strip() for k in os.getenv('ANSPIRE_API_KEYS', '').split(',') if k.strip()]
+        cls.api_keys = [
+            key.strip()
+            for key in os.getenv('ANSPIRE_SEARCH_API_KEYS', '').split(',')
+            if key.strip()
+        ]
         cls.has_api_key = len(cls.api_keys) > 0
         cls.has_valid_api_key = False  # 标记是否有有效的 API Key
         
@@ -483,10 +487,10 @@ class TestAnspireIntegration(unittest.TestCase):
 
     def setUp(self):
         """在每次测试前检查 API Key 是否有效"""
-        if not os.environ.get("ANSPIRE_API_KEYS"):
-            self.skipTest("未设置 ANSPIRE_API_KEYS 环境变量，跳过集成测试")
+        if not os.environ.get("ANSPIRE_SEARCH_API_KEYS"):
+            self.skipTest("未设置 ANSPIRE_SEARCH_API_KEYS 环境变量，跳过集成测试")
         if not getattr(self.__class__, 'has_valid_api_key', False):
-            self.skipTest("ANSPIRE_API_KEYS 环境变量中的 API Key 无效，跳过集成测试")
+            self.skipTest("ANSPIRE_SEARCH_API_KEYS 环境变量中的 API Key 无效，跳过集成测试")
 
     @pytest.mark.network
     def test_real_api_call_stock_news(self):
@@ -569,18 +573,18 @@ def run_manual_test():
     
     # 检查配置
     config = get_config()
-    if not config.anspire_api_keys:
+    if not config.anspire_search_api_keys:
         print("\n❌ 未检测到 Anspire API Keys")
         print("请设置环境变量：")
-        print("  Windows PowerShell: $env:ANSPIRE_API_KEYS=\"your_api_key\"")
-        print("  Linux/Mac: export ANSPIRE_API_KEYS=\"your_api_key\"")
+        print("  Windows PowerShell: $env:ANSPIRE_SEARCH_API_KEYS=\"your_api_key\"")
+        print("  Linux/Mac: export ANSPIRE_SEARCH_API_KEYS=\"your_api_key\"")
         return False
     
-    print(f"\n✅ 已配置 {len(config.anspire_api_keys)} 个 Anspire API Key")
+    print(f"\n✅ 已配置 {len(config.anspire_search_api_keys)} 个 Anspire API Key")
     
     # 创建服务
     service = SearchService(
-        anspire_keys=config.anspire_api_keys,
+        anspire_keys=config.anspire_search_api_keys,
         bocha_keys=config.bocha_api_keys,
         tavily_keys=config.tavily_keys,
         searxng_public_instances_enabled=False,

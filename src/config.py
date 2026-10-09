@@ -1024,7 +1024,10 @@ class Config:
     vision_provider_priority: str = "gemini,anthropic,openai"
 
     # === 搜索引擎配置（支持多 Key 负载均衡）===
-    anspire_api_keys: List[str] = field(default_factory=list)  # Anspire Search API Keys
+    # ANSPIRE_API_KEYS is reserved for the OpenAI-compatible LLM fallback.
+    # Search intentionally uses a separate opt-in key list.
+    anspire_api_keys: List[str] = field(default_factory=list)
+    anspire_search_api_keys: List[str] = field(default_factory=list)
     bocha_api_keys: List[str] = field(default_factory=list)  # Bocha API Keys
     minimax_api_keys: List[str] = field(default_factory=list)  # MiniMax API Keys
     tavily_api_keys: List[str] = field(default_factory=list)  # Tavily API Keys
@@ -1537,12 +1540,15 @@ class Config:
             if _single_deepseek:
                 deepseek_api_keys = [_single_deepseek]
 
-        # Anspire Open shares the same key as Anspire Search and exposes an
-        # OpenAI-compatible LLM gateway.  When no other OpenAI-compatible key is
-        # configured, use ANSPIRE_API_KEYS as the legacy openai-compatible
-        # provider so "one key" setups work without LLM_CHANNELS.
+        # ANSPIRE_API_KEYS is reserved for the OpenAI-compatible LLM gateway.
+        # Search has a separate, opt-in ANSPIRE_SEARCH_API_KEYS setting so an
+        # LLM fallback key never silently enables web search requests.
         anspire_keys_str = os.getenv('ANSPIRE_API_KEYS', '')
         anspire_api_keys = [k.strip() for k in anspire_keys_str.split(',') if k.strip()]
+        anspire_search_keys_str = os.getenv('ANSPIRE_SEARCH_API_KEYS', '')
+        anspire_search_api_keys = [
+            key.strip() for key in anspire_search_keys_str.split(',') if key.strip()
+        ]
         anspire_llm_enabled = parse_env_bool(os.getenv('ANSPIRE_LLM_ENABLED'), default=True)
         anspire_llm_base_url = (
             os.getenv('ANSPIRE_LLM_BASE_URL') or ANSPIRE_LLM_BASE_URL_DEFAULT
@@ -1935,6 +1941,7 @@ class Config:
             ),
             vision_provider_priority=os.getenv('VISION_PROVIDER_PRIORITY', 'gemini,anthropic,openai'),
             anspire_api_keys=anspire_api_keys,
+            anspire_search_api_keys=anspire_search_api_keys,
             bocha_api_keys=bocha_api_keys,
             minimax_api_keys=minimax_api_keys,
             tavily_api_keys=tavily_api_keys,
@@ -3108,7 +3115,7 @@ class Config:
         )
         return bool(
             has_longbridge_news
-            or self.anspire_api_keys
+            or self.anspire_search_api_keys
             or self.bocha_api_keys
             or self.minimax_api_keys
             or self.tavily_api_keys
