@@ -4685,6 +4685,31 @@ class SearchService:
             provider_max_results,
         )
         
+        # Longbridge provides security-scoped news rather than a general
+        # keyword-search provider. The primary pipeline enters through this
+        # method, so call the existing stock-news route explicitly before the
+        # generic provider loop below. Without this bridge, a deployment
+        # configured with Longbridge only has no entries in ``_providers`` and
+        # silently skips all news retrieval.
+        if (
+            search_count < max_searches
+            and is_foreign
+            and not is_index_etf
+            and self._longbridge_news_provider.is_available
+        ):
+            logger.info("[情报搜索] 最新消息: 优先使用 Longbridge 个股新闻")
+            results["latest_news"] = self.search_stock_news(
+                stock_code=stock_code,
+                stock_name=stock_name,
+                max_results=target_per_dimension,
+            )
+            search_count += 1
+            # ``search_stock_news`` already tries configured web providers as
+            # a fallback when Longbridge returns no usable article. Do not
+            # repeat the same latest-news request in the generic loop.
+            search_dimensions = [
+                dim for dim in search_dimensions if dim["name"] != "latest_news"
+            ]
         # 轮流使用不同的搜索引擎
         provider_index = 0
         
