@@ -1,13 +1,13 @@
 name: 每日股票分析
 
 on:
-  # 定时触发 - 每天北京时间 18:00 (UTC 10:00)
-  schedule:
-    - cron: '0 10 * * 1-5'     # 周一到周五，UTC 10:00 = 北京时间 18:00
-  
   # 手动触发
   workflow_dispatch:
     inputs:
+      stocks:
+        description: '要扫描的股票代码，逗号分隔'
+        required: true
+        type: string
       mode:
         description: '运行模式'
         required: true
@@ -36,9 +36,6 @@ concurrency:
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    # 兼容误将 STOCK_LIST 配到同名 Environment variables 的场景；
-    # 推荐位置仍是 Settings -> Secrets and variables -> Actions -> Repository variables。
-    environment: STOCK_LIST
     # 添加超时限制，防止任务卡死
     timeout-minutes: ${{ fromJSON(vars.ANALYSIS_TIMEOUT_MINUTES || '30') }}
     
@@ -422,8 +419,7 @@ jobs:
           # ==========================================
           # 自选股配置
           # ==========================================
-          # 避免直接写入 STOCK_LIST，保留同名 Environment variables 的 runner 环境值。
-          STOCK_LIST_CONFIG: ${{ vars.STOCK_LIST || secrets.STOCK_LIST }}
+          STOCK_LIST: ${{ github.event.inputs.stocks }}
           MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || secrets.MARKET_REVIEW_REGION || 'cn' }}
           MARKET_REVIEW_COLOR_SCHEME: ${{ vars.MARKET_REVIEW_COLOR_SCHEME || secrets.MARKET_REVIEW_COLOR_SCHEME || 'green_up' }}
           
@@ -451,14 +447,10 @@ jobs:
           REALTIME_SOURCE_PRIORITY: ${{ vars.REALTIME_SOURCE_PRIORITY || 'tencent,akshare_sina,efinance,akshare_em' }}
           
         run: |
-          # 解析自选股配置：
-          # 1. Repository/Environment secrets 或 Repository variables（STOCK_LIST_CONFIG）
-          # 2. 同名 Environment variables 注入的 runner 环境变量（STOCK_LIST）
-          # 3. 最小默认值
-          if [ -n "${STOCK_LIST_CONFIG:-}" ]; then
-            export STOCK_LIST="$STOCK_LIST_CONFIG"
-          elif [ -z "${STOCK_LIST:-}" ]; then
-            export STOCK_LIST="600519"
+          # stocks is supplied explicitly through workflow_dispatch.
+          if [ -z "${STOCK_LIST:-}" ]; then
+            echo "::error::workflow_dispatch input stocks is required"
+            exit 1
           fi
 
           # 处理 LITELLM YAML 配置文件
