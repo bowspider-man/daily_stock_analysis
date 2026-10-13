@@ -1485,6 +1485,20 @@ def _apply_hold_watch_dashboard(
         stability["adjusted_score"] = score_calibration.get("adjusted_score")
         stability["final_action"] = score_calibration.get("final_action")
     dashboard["decision_stability"] = stability
+    battle = dashboard.get("battle_plan")
+    if not isinstance(battle, dict):
+        battle = {}; dashboard["battle_plan"] = battle
+    strategy = battle.get("position_strategy")
+    if not isinstance(strategy, dict):
+        strategy = {}; battle["position_strategy"] = strategy
+    strategy["suggested_position"] = "新增计划仓位0" if language == "zh" else "New planned position: 0"
+    strategy["entry_plan"] = no_position
+    phase = dashboard.get("phase_decision")
+    if not isinstance(phase, dict):
+        phase = {}; dashboard["phase_decision"] = phase
+    phase["immediate_action"] = no_position
+    # Preserve reference levels/held-position stops, but remove stale entry instructions.
+    battle["plan_status"] = "reference_only_pending_review"
 
     if reason and reason not in str(result.risk_warning or ""):
         sep = "；" if language == "zh" else "; "
@@ -1517,7 +1531,16 @@ def _downgrade_buy_without_capital_flow(
 
     result.decision_type = "hold"
     result.confidence_level = confidence
-    _bound_hold_watch_sentiment_score(result, reason=reason, final_action="hold")
+    structurally_unsupported = flow_status.strip().lower().replace("-", "_") in {"not_supported", "unsupported"}
+    if structurally_unsupported:
+        raw_score = int(getattr(result, "sentiment_score", 50))
+        _record_decision_score_calibration(result, raw_score=raw_score, adjusted_score=raw_score,
+                                          final_action="watch", guardrail_reason="capital_flow_not_applicable")
+        if language == "zh":
+            reason = "本市场资金流字段不适用；保留研究评分，交易资格等待独立量价与开盘复核。"
+            no_position = "新增计划仓位0；资金流不适用不代表偏空，开盘后复核量价、支撑与风险。"
+    else:
+        _bound_hold_watch_sentiment_score(result, reason=reason, final_action="hold")
     _apply_hold_watch_dashboard(
         result,
         language,
