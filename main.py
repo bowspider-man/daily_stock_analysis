@@ -85,7 +85,8 @@ import logging
 import sys
 import time
 import uuid
-from datetime import date, datetime, timezone, timedelta
+from datetime import date, datetime, time as datetime_time, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 from src.webui_frontend import prepare_webui_frontend_assets
 from src.config import get_config, Config
@@ -392,6 +393,14 @@ def parse_arguments() -> argparse.Namespace:
         '--force-run',
         action='store_true',
         help='跳过交易日检查，强制执行全量分析（Issue #373）'
+    )
+
+    parser.add_argument(
+        '--analysis-date',
+        type=date.fromisoformat,
+        default=None,
+        metavar='YYYY-MM-DD',
+        help='以指定交易日收盘后的数据为基准分析（默认使用当前有效交易日）'
     )
 
     parser.add_argument(
@@ -948,7 +957,19 @@ def run_full_analysis(
             should_run_market_review
             and getattr(config, 'daily_market_context_enabled', True)
         )
-        analysis_reference_time = datetime.now(timezone.utc)
+        requested_analysis_date = getattr(args, 'analysis_date', None)
+        if requested_analysis_date is not None:
+            # Treat an explicit calendar date as a completed HK trading session.
+            # The pipeline already derives each symbol's effective daily bar from
+            # this frozen reference time, including holiday/weekend fallback.
+            analysis_reference_time = datetime.combine(
+                requested_analysis_date,
+                datetime_time.max,
+                tzinfo=ZoneInfo('Asia/Hong_Kong'),
+            ).astimezone(timezone.utc)
+            logger.info('历史分析日期: %s', requested_analysis_date.isoformat())
+        else:
+            analysis_reference_time = datetime.now(timezone.utc)
         daily_market_context_target_date = None
         if should_use_daily_market_context:
             daily_market_context_target_date = _resolve_daily_market_context_target_date(
