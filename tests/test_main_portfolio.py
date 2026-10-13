@@ -12,6 +12,12 @@ from src.services.runtime_scheduler import RuntimeSchedulerService
 
 
 class MainPortfolioTest(unittest.TestCase):
+    def test_parse_arguments_accepts_analysis_date(self):
+        with patch.object(sys, "argv", ["main.py", "--analysis-date", "2026-10-12"]):
+            args = main.parse_arguments()
+
+        self.assertEqual(args.analysis_date.isoformat(), "2026-10-12")
+
     def test_parse_arguments_accepts_futu_portfolio(self):
         with patch.object(sys, "argv", ["main.py", "--portfolio", "FUTU"]):
             args = main.parse_arguments()
