@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [修复] 盘前及冻结历史日线不再追加昨收占位报价；实时覆盖要求同一常规交易时段的提供方时间戳，资金流结构性不支持保留研究评分并同步观察计划。
+
 - [新功能] 每日 GitHub Actions 支持可选“分析日期”输入，并将指定日期作为个股分析的冻结交易日基准。
 - [改进] 将 Anspire 搜索配置拆分为显式的 `ANSPIRE_SEARCH_API_KEYS`；`ANSPIRE_API_KEYS` 仅保留为 Anspire LLM 兼容兜底，不再自动产生联网搜索请求。
 - [新功能] 已识别港股/美股个股新闻优先使用 Longbridge Content API；无结果、不可用或不支持代码时才回退到已配置的搜索服务，Longbridge 单独配置时明确披露无可用新闻。
