@@ -113,6 +113,36 @@ from bot.models import BotMessage
 logger = logging.getLogger(__name__)
 
 
+def _realtime_overlay_allowed(code, realtime_quote, market=None):
+    """Only a timestamped current regular-session quote may form a daily bar."""
+    from src.services.history_loader import get_frozen_target_date
+    market = market or get_market_for_stock(normalize_stock_code(code))
+    now = get_market_now(market)
+    frozen = get_frozen_target_date()
+    if frozen is not None and frozen < now.date():
+        return False
+    phase = build_market_phase_context(market=market, current_time=now)
+    if not phase.is_market_open_now:
+        return False
+    timestamp = getattr(realtime_quote, "provider_timestamp", None)
+    try:
+        if isinstance(timestamp, (int, float)):
+            observed = datetime.fromtimestamp(timestamp / 1000 if timestamp > 1e11 else timestamp, timezone.utc)
+        elif isinstance(timestamp, datetime):
+            observed = timestamp
+        else:
+            observed = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+        if observed.tzinfo is None:
+            return False
+        observed = observed.astimezone(now.tzinfo)
+        if observed.date() != now.date() or observed > now + timedelta(seconds=60):
+            return False
+        observed_phase = build_market_phase_context(market=market, current_time=observed)
+        return bool(observed_phase.is_market_open_now)
+    except (ValueError, TypeError, OverflowError, OSError):
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Index capability matrix — the single authority for which analysis modules
 # are skipped for index targets (Story 1.5). Skipping must happen before any
@@ -1027,6 +1057,9 @@ class StockAnalysisPipeline:
             增强后的上下文
         """
         enhanced = context.copy()
+        if realtime_quote and not _realtime_overlay_allowed(context.get('code', ''), realtime_quote):
+            enhanced['realtime_overlay_excluded'] = 'not_current_regular_session_or_frozen_signal'
+            realtime_quote = None
         enhanced["report_language"] = normalize_report_language(getattr(self.config, "report_language", "zh"))
         
         # 添加股票名称
@@ -2744,6 +2777,8 @@ class StockAnalysisPipeline:
         if df is None or df.empty or 'close' not in df.columns:
             return df
         if realtime_quote is None:
+            return df
+        if not _realtime_overlay_allowed(code, realtime_quote, market):
             return df
         price = getattr(realtime_quote, 'price', None)
         if price is None or not (isinstance(price, (int, float)) and price > 0):
