@@ -959,13 +959,25 @@ def run_full_analysis(
         )
         requested_analysis_date = getattr(args, 'analysis_date', None)
         if requested_analysis_date is not None:
-            # Treat an explicit calendar date as a completed HK trading session.
+            from src.core.trading_calendar import MARKET_TIMEZONE, get_market_for_stock
+            analysis_markets = {
+                get_market_for_stock(code)
+                for code in stock_codes
+                if get_market_for_stock(code)
+            }
+            if market_review_region in MARKET_TIMEZONE and not analysis_markets:
+                analysis_markets.add(market_review_region)
+            analysis_timezone_name = MARKET_TIMEZONE.get(
+                next(iter(analysis_markets), market_review_region or 'hk'),
+                'Asia/Hong_Kong',
+            )
+            # Treat an explicit calendar date as a completed session in the inferred market timezone.
             # The pipeline already derives each symbol's effective daily bar from
             # this frozen reference time, including holiday/weekend fallback.
             analysis_reference_time = datetime.combine(
                 requested_analysis_date,
                 datetime_time.max,
-                tzinfo=ZoneInfo('Asia/Hong_Kong'),
+                tzinfo=ZoneInfo(analysis_timezone_name),
             ).astimezone(timezone.utc)
             logger.info('历史分析日期: %s', requested_analysis_date.isoformat())
         else:
