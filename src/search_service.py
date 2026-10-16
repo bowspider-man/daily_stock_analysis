@@ -1170,7 +1170,7 @@ class BochaSearchProvider(BaseSearchProvider):
                     error_message = response.text
                 
                 # 根据错误码处理
-                if response.status_code == 403:
+                if response.status_code in (402, 403, 429):
                     error_msg = f"余额不足: {error_message}"
                 elif response.status_code == 401:
                     error_msg = f"API KEY无效: {error_message}"
@@ -1355,8 +1355,8 @@ class AnspireSearchProvider(BaseSearchProvider):
                     error_message = response.text
                 
                 # 根据错误码处理
-                if response.status_code == 403:
-                    error_msg = f"余额不足或权限不足：{error_message}"
+                if response.status_code in (402, 403, 429):
+                    error_msg = f"Anspire 搜索额度不足、受限或被限流；已跳过该来源并继续使用其他可用数据源：{error_message}"
                 elif response.status_code == 401:
                     error_msg = f"API KEY 无效：{error_message}"
                 elif response.status_code == 400:
@@ -2150,7 +2150,7 @@ class SearXNGSearchProvider(BaseSearchProvider):
 
             if response.status_code != 200:
                 error_msg = self._parse_http_error(response)
-                if response.status_code == 403:
+                if response.status_code in (402, 403, 429):
                     error_msg = (
                         f"{error_msg}；SearXNG 实例可能未启用 JSON 输出（请检查 settings.yml），"
                         "或实例/代理拒绝了本次访问"
