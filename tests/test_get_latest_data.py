@@ -18,6 +18,7 @@ from datetime import date, timedelta
 import pandas as pd
 
 from src.config import Config
+from src.services.history_loader import reset_frozen_target_date, set_frozen_target_date
 from src.storage import DatabaseManager, StockDaily
 
 
@@ -95,6 +96,55 @@ class GetLatestDataTestCase(unittest.TestCase):
         result = self.db.get_latest_data("600519", days=5)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].code, "600519")
+
+    def test_analysis_context_respects_explicit_and_frozen_dates(self) -> None:
+        bars = pd.DataFrame([
+            {'date': date(2026, 10, 19), 'close': 100.0, 'volume': 1000.0},
+            {'date': date(2026, 10, 20), 'close': 105.0, 'volume': 1500.0},
+            {'date': date(2026, 10, 21), 'close': 110.0, 'volume': 2000.0},
+        ])
+        self.db.save_daily_data(bars, 'SPCX', data_source='TestData')
+
+        explicit = self.db.get_analysis_context('SPCX', target_date=date(2026, 10, 20))
+        scored_bars = self.db.get_data_range('SPCX', date(2026, 10, 1), date(2026, 10, 20))
+        self.assertEqual(explicit['date'], scored_bars[-1].date.isoformat())
+        self.assertEqual(explicit['date'], '2026-10-20')
+        self.assertEqual(explicit['today']['close'], 105.0)
+        self.assertEqual(explicit['yesterday']['date'], date(2026, 10, 19))
+        self.assertEqual(explicit['volume_change_ratio'], 1.5)
+        self.assertEqual(explicit['price_change_ratio'], 5.0)
+
+        token = set_frozen_target_date(date(2026, 10, 20))
+        try:
+            frozen = self.db.get_analysis_context('SPCX')
+            self.assertEqual(frozen, explicit)
+            earlier = self.db.get_analysis_context('SPCX', target_date=date(2026, 10, 19))
+            self.assertEqual(earlier['date'], '2026-10-19')
+            self.assertNotIn('yesterday', earlier)
+        finally:
+            reset_frozen_target_date(token)
+
+        latest = self.db.get_analysis_context('SPCX')
+        self.assertEqual(latest['date'], '2026-10-21')
+        self.assertEqual(latest['yesterday']['date'], date(2026, 10, 20))
+
+    def test_analysis_context_uses_latest_bar_not_after_requested_date(self) -> None:
+        bars = pd.DataFrame([
+            {'date': date(2026, 10, 19), 'close': 100.0, 'volume': 1000.0},
+            {'date': date(2026, 10, 21), 'close': 110.0, 'volume': 2000.0},
+        ])
+        self.db.save_daily_data(bars, 'SPCX', data_source='TestData')
+
+        context = self.db.get_analysis_context('SPCX', target_date=date(2026, 10, 20))
+        scored_bars = self.db.get_data_range('SPCX', date(2026, 10, 1), date(2026, 10, 20))
+        self.assertEqual(context['date'], scored_bars[-1].date.isoformat())
+        self.assertEqual(context['date'], '2026-10-19')
+        self.assertNotIn('yesterday', context)
+        self.assertIsNone(self.db.get_analysis_context('SPCX', target_date=date(2026, 10, 18)))
+        self.assertEqual(
+            self.db.get_latest_data('SPCX', days=2, end_date=date(2026, 10, 20))[0].date,
+            date(2026, 10, 19),
+        )
 
     def test_save_daily_data_batch_upsert_updates_existing_rows_and_keeps_insert_count(self) -> None:
         base_date = date(2026, 1, 2)

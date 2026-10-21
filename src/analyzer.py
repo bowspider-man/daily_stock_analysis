@@ -4045,6 +4045,18 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         config = self._get_runtime_config()
         report_language = normalize_report_language(getattr(config, "report_language", "zh"))
         system_prompt = self._get_analysis_system_prompt(report_language, stock_code=code)
+        if context.get("premarket_signal_date"):
+            signal_date = context["premarket_signal_date"]
+            system_prompt += (
+                "\n\n## US premarket baseline (higher priority than general trading examples)\n"
+                f"Freeze every daily-bar indicator, trend, score and price reference at {signal_date}. "
+                "Do not use an execution-day daily bar or claim that the market has opened. "
+                "Premarket news may be newer than the signal close only when its source, publication "
+                "time and run cutoff have been verified. Do not invent financial facts or chip data. "
+                "The final plan will be computed deterministically from frozen bars; do not fabricate "
+                "a buy interval, stop, target, reward ratio, position or current buy instruction. "
+                "Use USD for US prices. Express the conclusion as awaiting post-open review or watch only."
+            )
         skill_instructions, default_skill_policy, use_legacy_default_prompt = self._get_skill_prompt_sections()
         
         # 请求前增加延时（防止连续请求触发限流）
@@ -4367,6 +4379,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             stock_name = f'Stock {code}'
 
         today = context.get('today', {})
+        premarket_signal_date = context.get("premarket_signal_date")
         unknown_text = get_unknown_text(report_language)
         no_data_text = get_no_data_text(report_language)
         quote_section_title, close_price_label = _phase_aware_quote_labels(context, report_language)
@@ -4379,7 +4392,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             amount_label = "Realtime Turnover" if realtime_overlay_quote else "Turnover"
             open_label, high_label, low_label = "Open", "High", "Low"
         else:
-            price_unit = " 元"
+            price_unit = " 美元" if premarket_signal_date else " 元"
             pct_chg_label = "实时涨跌幅" if realtime_overlay_quote else "涨跌幅"
             volume_label = "实时成交量" if realtime_overlay_quote else "成交量"
             amount_label = "实时成交额" if realtime_overlay_quote else "成交额"
@@ -4399,7 +4412,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
             [
                 f"| {pct_chg_label} | {today.get('pct_chg', 'N/A')}% |",
                 f"| {volume_label} | {self._format_volume(today.get('volume'), report_language)} |",
-                f"| {amount_label} | {self._format_amount(today.get('amount'), report_language)} |",
+                f"| {amount_label} | {self._format_amount(today.get('amount'), report_language, currency='USD' if premarket_signal_date else 'CNY')} |",
             ]
         )
         quote_rows_text = "\n".join(quote_rows)
@@ -4429,6 +4442,14 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
 
 ---
 """
+        if premarket_signal_date:
+            prompt += (
+                f"\n## Frozen US premarket signal bar: {premarket_signal_date}\n"
+                "All daily prices, moving averages, volume and scores below refer to this completed "
+                "US trading day, not an execution-day live quote. News and financial releases have "
+                "a separate premarket publication-time cutoff. Price units are USD. "
+                "Any entry plan remains conditional until a separate post-open review.\n"
+            )
         prompt += format_market_phase_prompt_section(
             context.get("market_phase_context"),
             report_language=report_language,
@@ -5128,18 +5149,19 @@ Output the complete Decision Dashboard in JSON format."""
         else:
             return f"{volume:.0f} 股"
     
-    def _format_amount(self, amount: Optional[float], report_language: str = "zh") -> str:
+    def _format_amount(self, amount: Optional[float], report_language: str = "zh", *, currency: str = "CNY") -> str:
         """格式化成交额显示"""
         if amount is None:
             return 'N/A'
         if normalize_report_language(report_language) in ("en", "ko"):
             return self._format_scaled_number_en(amount)
+        unit = "美元" if currency == "USD" else "元"
         if amount >= 1e8:
-            return f"{amount / 1e8:.2f} 亿元"
+            return f"{amount / 1e8:.2f} 亿{unit}"
         elif amount >= 1e4:
-            return f"{amount / 1e4:.2f} 万元"
+            return f"{amount / 1e4:.2f} 万{unit}"
         else:
-            return f"{amount:.0f} 元"
+            return f"{amount:.0f} {unit}"
 
     @staticmethod
     def _format_scaled_number_en(value: float) -> str:

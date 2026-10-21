@@ -116,6 +116,14 @@ def _handle_search_stock_news(stock_code: str, stock_name: str) -> dict:
             "error": response.error_message,
         }
 
+    from src.agent.news_evidence import get_current_news_evidence
+    evidence_scope = get_current_news_evidence()
+    if evidence_scope is not None and evidence_scope.cutoff_at is not None:
+        from dataclasses import replace
+        response = replace(
+            response,
+            results=evidence_scope.filter_premarket_results(response.results),
+        )
     record_news_evidence(len(response.results))
 
     _persist_news_response(
@@ -188,6 +196,18 @@ def _handle_search_comprehensive_intel(stock_code: str, stock_name: str) -> dict
         # 多维检索已发起但整体没有结果，同样必须记 0（见 _handle_search_stock_news）。
         record_news_evidence(0)
         return {"error": "Comprehensive intel search returned no results"}
+
+    from src.agent.news_evidence import get_current_news_evidence
+    evidence_scope = get_current_news_evidence()
+    if evidence_scope is not None and evidence_scope.cutoff_at is not None:
+        from dataclasses import replace
+        intel_results = {
+            dimension: replace(
+                response,
+                results=evidence_scope.filter_premarket_results(response.results),
+            ) if response and response.success else response
+            for dimension, response in intel_results.items()
+        }
 
     # Format into readable report
     report = service.format_intel_report(intel_results, query_name)

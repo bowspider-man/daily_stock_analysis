@@ -708,9 +708,26 @@ class AgentExecutor:
             skills_section=skills_section,
             language_section=_build_language_section(report_language),
         )
+        if (context or {}).get("premarket_signal_date"):
+            system_prompt += (
+                "\n## US盘前历史基准覆盖规则（优先于上面的通用实时行情步骤）\n"
+                "本轮只研究指定信号日的完整收盘日线。第一阶段只取截至该日的历史K线，"
+                "不要请求或使用实时行情、无时间戳的筹码/资金流/财务工具；"
+                "技术评分、趋势、均线、量能和价格参考不得混入执行日日线。"
+                "盘前新发布的新闻/财务可以作为独立资讯，但必须注明可核验的发布时间和原始出处；"
+                "不得把新闻时间误写成事件时间，未知出处或发布时间的具体断言须标为未核实。"
+                "输出观望/待开盘复核，不写现在买入、实际持仓或非零新建仓股数。"
+                "价格点位以系统计算和校验的情景计划为准，不得自行编造共用止损或目标。\n"
+            )
 
         # Build tool declarations in OpenAI format (litellm handles all providers)
         tool_decls = self.tool_registry.to_openai_tools()
+        if (context or {}).get("premarket_signal_date"):
+            excluded = {"get_realtime_quote", "get_stock_info", "get_capital_flow", "get_chip_distribution"}
+            tool_decls = [
+                item for item in tool_decls
+                if item.get("function", {}).get("name") not in excluded
+            ]
 
         # Initialize conversation
         messages: List[Dict[str, Any]] = [
@@ -872,6 +889,16 @@ class AgentExecutor:
                 parts.append(f"\n股票代码: {context['stock_code']}")
             if context.get("report_type"):
                 parts.append(f"报告类型: {context['report_type']}")
+            if context.get("premarket_signal_date"):
+                parts.append(
+                    f"信号日: {context['premarket_signal_date']}（仅该日及此前完整日线用于技术评分和价格计划；"
+                    "盘前新资讯只做独立事实核验）"
+                )
+                if isinstance(context.get("trend_result"), dict):
+                    parts.append(
+                        "[确定性技术评分与分项，不得重算或改写] "
+                        + json.dumps(context["trend_result"], ensure_ascii=False)
+                    )
             if report_language == "en":
                 parts.append("输出语言: English（所有 JSON 键名保持不变，所有面向用户的文本值使用英文）")
             elif report_language == "ko":

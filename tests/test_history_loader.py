@@ -68,7 +68,10 @@ class HistoryLoaderTestCase(unittest.TestCase):
         mock_db.get_data_range.return_value = []
         mock_get_db.return_value = mock_db
 
-        fake_df = pd.DataFrame({"close": [1, 2, 3]})
+        fake_df = pd.DataFrame({
+            "date": [date(2026, 4, 16), date(2026, 4, 17), date(2026, 4, 18)],
+            "close": [1, 2, 3],
+        })
         mock_fm = MagicMock()
         mock_fm.get_daily_data.return_value = (fake_df, "eastmoney")
         mock_get_fm.return_value = mock_fm
@@ -78,6 +81,23 @@ class HistoryLoaderTestCase(unittest.TestCase):
         self.assertIsNotNone(df)
         self.assertEqual(source, "eastmoney")
         mock_fm.get_daily_data.assert_called_once_with("600519", days=60)
+
+    @patch("src.services.history_loader._get_fetcher_manager")
+    @patch("src.storage.get_db")
+    def test_frozen_fallback_excludes_future_daily_bar(self, mock_get_db, mock_get_fm):
+        from src.services.history_loader import load_history_df
+
+        mock_get_db.return_value.get_data_range.return_value = []
+        mock_get_fm.return_value.get_daily_data.return_value = (
+            pd.DataFrame({
+                "date": [date(2026, 10, 20), date(2026, 10, 21)],
+                "close": [147.79, 500.0],
+            }),
+            "provider",
+        )
+        df, source = load_history_df("SPCX", days=60, target_date=date(2026, 10, 20))
+        self.assertEqual(source, "provider")
+        self.assertEqual(df["date"].tolist(), [date(2026, 10, 20)])
 
     # ------------------------------------------------------------------
     # ContextVar integration

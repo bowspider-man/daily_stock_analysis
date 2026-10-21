@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import datetime
 from contextvars import ContextVar, Token
+from dataclasses import replace
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -27,9 +29,38 @@ logger = logging.getLogger(__name__)
 class NewsEvidenceAccumulator:
     """线程安全地累计 Agent 本次分析实际消费的新闻条数。"""
 
-    def __init__(self) -> None:
+    def __init__(self, cutoff_at: Optional[datetime] = None) -> None:
         self._lock = threading.Lock()
         self._total = 0
+        self.cutoff_at = cutoff_at
+        self._publication_audit: list[dict] = []
+        self._source_checks = 0
+
+    def filter_premarket_results(self, results: list) -> list:
+        if self.cutoff_at is None:
+            return results
+        from src.services.premarket_evidence import audit_news_result
+        checked = []
+        for item in results:
+            with self._lock:
+                verify_source = self._source_checks < 3
+                self._source_checks += int(verify_source)
+            checked.append(audit_news_result(item, self.cutoff_at, verify_source=verify_source))
+        with self._lock:
+            self._publication_audit.extend(checked)
+        accepted = []
+        for item, audit in zip(results, checked):
+            if audit["status"] not in {"source_verified", "metadata_verified", "partial"}:
+                continue
+            if audit["status"] == "source_verified":
+                item = replace(item, published_date=audit["published_at_utc"])
+            accepted.append(item)
+        return accepted
+
+    @property
+    def publication_audit(self) -> list[dict]:
+        with self._lock:
+            return list(self._publication_audit)
 
     def record(self, count: int) -> None:
         """记录一次搜索工具真实返回的条数；零命中也必须记录（记 0）。"""
@@ -68,9 +99,9 @@ _CURRENT_ACCUMULATOR: ContextVar[Optional[NewsEvidenceAccumulator]] = ContextVar
 )
 
 
-def activate_news_evidence_scope() -> Token:
+def activate_news_evidence_scope(cutoff_at: Optional[datetime] = None) -> Token:
     """开启一次 Agent 运行的证据作用域，返回重置令牌。"""
-    return _CURRENT_ACCUMULATOR.set(NewsEvidenceAccumulator())
+    return _CURRENT_ACCUMULATOR.set(NewsEvidenceAccumulator(cutoff_at=cutoff_at))
 
 
 def get_current_news_evidence() -> Optional[NewsEvidenceAccumulator]:

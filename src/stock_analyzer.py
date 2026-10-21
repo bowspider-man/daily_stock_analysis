@@ -130,6 +130,7 @@ class TrendAnalysisResult:
     # 买入信号
     buy_signal: BuySignal = BuySignal.WAIT
     signal_score: int = 0            # 综合评分 0-100
+    score_components: Dict[str, int] = field(default_factory=dict)
     signal_reasons: List[str] = field(default_factory=list)
     risk_factors: List[str] = field(default_factory=list)
     
@@ -154,6 +155,7 @@ class TrendAnalysisResult:
             'support_ma10': self.support_ma10,
             'buy_signal': self.buy_signal.value,
             'signal_score': self.signal_score,
+            'score_components': self.score_components,
             'signal_reasons': self.signal_reasons,
             'risk_factors': self.risk_factors,
             'macd_dif': self.macd_dif,
@@ -610,6 +612,7 @@ class StockTrendAnalyzer:
         }
         trend_score = trend_scores.get(result.trend_status, 12)
         score += trend_score
+        components = {"trend": trend_score}
 
         if result.trend_status in [TrendStatus.STRONG_BULL, TrendStatus.BULL]:
             reasons.append(f"✅ {result.trend_status.value}，顺势做多")
@@ -631,11 +634,12 @@ class StockTrendAnalyzer:
             effective_threshold = base_threshold
             is_strong_trend = False
 
+        bias_start = score
         if bias < 0:
             # Price below MA5 (pullback)
             if bias > -3:
                 score += 20
-                reasons.append(f"✅ 价格略低于MA5({bias:.1f}%)，回踩买点")
+                reasons.append(f"价格略低于MA5({bias:.1f}%)，乖离率得分高；支撑尚待确认")
             elif bias > -5:
                 score += 16
                 reasons.append(f"✅ 价格回踩MA5({bias:.1f}%)，观察支撑")
@@ -644,7 +648,7 @@ class StockTrendAnalyzer:
                 risks.append(f"⚠️ 乖离率过大({bias:.1f}%)，可能破位")
         elif bias < 2:
             score += 18
-            reasons.append(f"✅ 价格贴近MA5({bias:.1f}%)，介入好时机")
+            reasons.append(f"价格贴近MA5({bias:.1f}%)，不等于入场触发")
         elif bias < base_threshold:
             score += 14
             reasons.append(f"⚡ 价格略高于MA5({bias:.1f}%)，可小仓介入")
@@ -663,6 +667,7 @@ class StockTrendAnalyzer:
             risks.append(
                 f"❌ 乖离率过高({bias:.1f}%>{base_threshold:.1f}%)，严禁追高！"
             )
+        components["bias_ma5"] = score - bias_start
 
         # === 量能评分（15分）===
         volume_scores = {
@@ -674,6 +679,7 @@ class StockTrendAnalyzer:
         }
         vol_score = volume_scores.get(result.volume_status, 8)
         score += vol_score
+        components["volume_5d"] = vol_score
 
         if result.volume_status == VolumeStatus.SHRINK_VOLUME_DOWN:
             reasons.append("✅ 缩量回调，主力洗盘")
@@ -681,12 +687,14 @@ class StockTrendAnalyzer:
             risks.append("⚠️ 放量下跌，注意风险")
 
         # === 支撑评分（10分）===
+        support_start = score
         if result.support_ma5:
             score += 5
             reasons.append("✅ MA5支撑有效")
         if result.support_ma10:
             score += 5
             reasons.append("✅ MA10支撑有效")
+        components["ma_support"] = score - support_start
 
         # === MACD 评分（15分）===
         macd_scores = {
@@ -700,6 +708,7 @@ class StockTrendAnalyzer:
         }
         macd_score = macd_scores.get(result.macd_status, 5)
         score += macd_score
+        components["macd"] = macd_score
 
         if result.macd_status in [MACDStatus.GOLDEN_CROSS_ZERO, MACDStatus.GOLDEN_CROSS]:
             reasons.append(f"✅ {result.macd_signal}")
@@ -718,6 +727,7 @@ class StockTrendAnalyzer:
         }
         rsi_score = rsi_scores.get(result.rsi_status, 5)
         score += rsi_score
+        components["rsi"] = rsi_score
 
         if result.rsi_status in [RSIStatus.OVERSOLD, RSIStatus.STRONG_BUY]:
             reasons.append(f"✅ {result.rsi_signal}")
@@ -728,6 +738,7 @@ class StockTrendAnalyzer:
 
         # === 综合判断 ===
         result.signal_score = score
+        result.score_components = components
         result.signal_reasons = reasons
         result.risk_factors = risks
 

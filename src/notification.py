@@ -1286,7 +1286,15 @@ class NotificationService(
         ma_label = _nlabel("Moving Averages", "均线", "이동평균")
         volume_analysis_label = _nlabel("Volume", "量能", "거래량")
         news_heading = _nlabel("News Flow", "消息面", "뉴스 흐름")
-        if getattr(config, 'report_renderer_enabled', False) and results:
+        if (
+            getattr(config, 'report_renderer_enabled', False)
+            and results
+            and not any(
+                isinstance(getattr(item, 'dashboard', None), dict)
+                and item.dashboard.get('premarket_signal_date')
+                for item in results
+            )
+        ):
             from src.services.report_renderer import render
             out = render(
                 platform='markdown',
@@ -1329,7 +1337,7 @@ class NotificationService(
                 report_lines.append(
                     f"{signal_emoji} **{display_name}({r.code})**: "
                     f"{signal_text} | "
-                    f"{labels['score_label']} {r.sentiment_score} | "
+                    f"{'技术评分' if isinstance(getattr(r, 'dashboard', None), dict) and r.dashboard.get('premarket_signal_date') and report_language == 'zh' else labels['score_label']} {r.sentiment_score} | "
                     f"{localize_trend_prediction(r.trend_prediction, report_language)}"
                 )
                 if self._report_summary_only:
@@ -1363,6 +1371,8 @@ class NotificationService(
                         f"### 📰 {labels['info_heading']}",
                         "",
                     ])
+                    if dashboard.get('premarket_evidence_status'):
+                        report_lines.append(f"**盘前资讯时间与出处**: {dashboard['premarket_evidence_status']}")
                     # 舆情情绪总结
                     if intel.get('sentiment_summary'):
                         report_lines.append(f"**💭 {labels['sentiment_summary_label']}**: {intel['sentiment_summary']}")
@@ -1429,6 +1439,9 @@ class NotificationService(
                         f"### 📊 {labels['data_perspective_heading']}",
                         "",
                     ])
+                    availability = dashboard.get('data_block_availability')
+                    if availability is not None and dashboard.get('premarket_signal_date'):
+                        report_lines.extend([f"**数据块可用性**: {availability}/100", ""])
                     # 趋势状态
                     if trend_data:
                         is_bullish = (
@@ -1459,12 +1472,21 @@ class NotificationService(
                         ])
                     # 量能分析
                     if vol_data:
-                        report_lines.extend([
-                            f"**{labels['volume_label']}**: {labels['volume_ratio_label']} {vol_data.get('volume_ratio', 'N/A')} ({vol_data.get('volume_status', '')}) | "
-                            f"{labels['turnover_rate_label']} {vol_data.get('turnover_rate', 'N/A')}%",
-                            f"💡 *{vol_data.get('volume_meaning', '')}*",
-                            "",
-                        ])
+                        if dashboard.get('premarket_signal_date'):
+                            report_lines.extend([
+                                f"**5日量能状态**: {vol_data.get('volume_status', 'N/A')}（当日量/5日均量 {vol_data.get('volume_ratio', 'N/A')}） | "
+                                f"**昨量比**: {vol_data.get('previous_day_volume_ratio', 'N/A')}",
+                                "",
+                            ])
+                        else:
+                            report_lines.extend([
+                                f"**{labels['volume_label']}**: {labels['volume_ratio_label']} {vol_data.get('volume_ratio', 'N/A')} ({vol_data.get('volume_status', '')}) | "
+                                f"{labels['turnover_rate_label']} {vol_data.get('turnover_rate', 'N/A')}%",
+                                f"💡 *{vol_data.get('volume_meaning', '')}*",
+                                "",
+                            ])
+                    if dashboard.get('premarket_signal_date') and result.technical_analysis:
+                        report_lines.extend([f"**技术解读**: {result.technical_analysis}", ""])
                     # 筹码结构
                     if chip_data:
                         if is_chip_structure_unavailable(chip_data):
@@ -1498,7 +1520,27 @@ class NotificationService(
                     ])
                     # 狙击点位
                     sniper = battle.get('sniper_points', {})
-                    if sniper:
+                    price_plan = battle.get('price_plan')
+                    if dashboard.get('premarket_signal_date') and isinstance(price_plan, dict):
+                        report_lines.extend([
+                            "**📍 条件价格计划（USD；新增计划股数0）**",
+                            "",
+                            "| 情景 | 参考位 | 入场区间 | 止损 | 目标一 | 目标二 | 状态 |",
+                            "|------|------:|------:|------:|------:|------:|------|",
+                        ])
+                        for key in ('ideal', 'secondary'):
+                            item = price_plan.get(key)
+                            if not isinstance(item, dict):
+                                continue
+                            display = lambda value: f"${value:.2f}" if isinstance(value, (int, float)) else "待核"
+                            region = f"{display(item.get('entry_low'))}–{display(item.get('entry_high'))}"
+                            report_lines.append(
+                                f"| {item.get('name', key)} | {display(item.get('reference'))} | {region} | "
+                                f"{display(item.get('stop'))} | {display(item.get('target1'))} | "
+                                f"{display(item.get('target2'))} | {item.get('status', '观察')} |"
+                            )
+                        report_lines.extend(["", "*点位须在开盘后按各情景触发条件复核；缺少结构依据时为观察，盘前不触发交易。*", ""])
+                    elif sniper:
                         report_lines.extend([
                             f"**📍 {labels['action_points_heading']}**",
                             "",
@@ -2147,8 +2189,14 @@ class NotificationService(
         report_language = self._get_report_language(result)
         labels = get_report_labels(report_language)
 
+        is_premarket = isinstance(getattr(result, 'dashboard', None), dict) and result.dashboard.get('premarket_signal_date')
+        heading = (
+            f"{snapshot.get('date', is_premarket)} 收盘行情（USD）"
+            if is_premarket and report_language == 'zh'
+            else labels['market_snapshot_heading']
+        )
         lines.extend([
-            f"### 📈 {labels['market_snapshot_heading']}",
+            f"### 📈 {heading}",
             "",
             f"| {labels['close_label']} | {labels['prev_close_label']} | {labels['open_label']} | {labels['high_label']} | {labels['low_label']} | {labels['change_pct_label']} | {labels['change_amount_label']} | {labels['amplitude_label']} | {labels['volume_label']} | {labels['amount_label']} |",
             "|------|------|------|------|------|-------|-------|------|--------|--------|",
@@ -2297,6 +2345,11 @@ class NotificationService(
         the email compact when the fundamental pipeline returned partial/failed
         results (e.g. HK/US markets, ETF, or AkShare outages).
         """
+        dashboard = result.dashboard if isinstance(getattr(result, "dashboard", None), dict) else {}
+        if dashboard.get("premarket_signal_date"):
+            # Premarket final reports state only the verification conclusion.
+            # Raw figures and provenance stay in the separate audit payload.
+            return
         blocks = self._get_fundamental_blocks(result)
         report_language = self._get_report_language(result)
         labels = get_report_labels(report_language)

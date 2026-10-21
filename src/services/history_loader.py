@@ -174,6 +174,23 @@ def load_history_df(
         manager = _get_fetcher_manager()
         df, source = manager.get_daily_data(stock_code, days=days)
         if df is not None and not df.empty:
+            # A provider fallback can return bars after the frozen signal day.
+            # Agent tools and prefetch persist this returned frame, so clipping
+            # here is required before the model can consume or save it.
+            if target_date is not None or frozen is not None:
+                if "date" not in df.columns:
+                    logger.warning("load_history_df(%s): fallback has no trade date", stock_code)
+                    return None, "none"
+                dates = df["date"].map(_coerce_bar_date)
+                valid = (dates != date.min) & (dates <= end)
+                if bool(valid.all()) and not bool(dates.duplicated().any()) and bool(dates.is_monotonic_increasing):
+                    return df, source
+                df = df.loc[valid].copy()
+                if df.empty:
+                    logger.warning("load_history_df(%s): no fallback bars by %s", stock_code, end)
+                    return None, "none"
+                df["date"] = dates.loc[df.index]
+                df = df.drop_duplicates(subset="date", keep="last").sort_values("date")
             return df, source
     except Exception as e:
         logger.warning("load_history_df(%s): DataFetcherManager failed: %s", stock_code, e)

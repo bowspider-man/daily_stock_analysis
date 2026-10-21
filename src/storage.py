@@ -2341,26 +2341,28 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
     def get_latest_data(
         self, 
         code: str, 
-        days: int = 2
+        days: int = 2,
+        end_date: Optional[date] = None,
     ) -> List[StockDaily]:
         """
         获取最近 N 天的数据
         
-        用于计算"相比昨日"的变化
+        用于计算"相比昨日"的变化；冻结分析可限定最晚交易日期。
         
         Args:
             code: 股票代码
             days: 获取天数
+            end_date: 最晚交易日期（含）；不指定时保留读取最新数据的行为
             
         Returns:
             StockDaily 对象列表（按日期降序）
         """
         with self.get_session() as session:
+            query = select(StockDaily).where(StockDaily.code == code)
+            if end_date is not None:
+                query = query.where(StockDaily.date <= end_date)
             results = session.execute(
-                select(StockDaily)
-                .where(StockDaily.code == code)
-                .order_by(desc(StockDaily.date))
-                .limit(days)
+                query.order_by(desc(StockDaily.date)).limit(days)
             ).scalars().all()
             
             return list(results)
@@ -3492,20 +3494,17 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         
         Args:
             code: 股票代码
-            target_date: 目标日期（默认今天）
+            target_date: 最晚交易日期（含）；未指定时优先使用本轮冻结日期，否则取最新数据
             
         Returns:
             包含今日数据、昨日对比等信息的字典
         """
         if target_date is None:
-            target_date = date.today()
-        # 注意：尽管入参提供了 target_date，但当前实现实际使用的是“最新两天数据”（get_latest_data），
-        # 并不会按 target_date 精确取当日/前一交易日的上下文。
-        # 因此若未来需要支持“按历史某天复盘/重算”的可解释性，这里需要调整。
-        # 该行为目前保留（按需求不改逻辑）。
-        
-        # 获取最近2天数据
-        recent_data = self.get_latest_data(code, days=2)
+            from src.services.history_loader import get_frozen_target_date
+            target_date = get_frozen_target_date()
+
+        # 与趋势评分的日线结束日期一致；无冻结日期时仍读取最新两条。
+        recent_data = self.get_latest_data(code, days=2, end_date=target_date)
         
         if not recent_data:
             logger.warning(f"未找到 {code} 的数据")

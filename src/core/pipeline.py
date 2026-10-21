@@ -99,6 +99,8 @@ from src.services.stock_list_parser import AnalysisTarget, ParseStatus
 from src.services.decision_signal_summary import summarize_decision_signal
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
+from src.services.premarket_research import apply_us_premarket_research
+from src.services.premarket_evidence import audit_financial_context, audit_news_result
 from src.core.trading_calendar import (
     build_market_phase_context,
     get_effective_trading_date,
@@ -504,6 +506,18 @@ class StockAnalysisPipeline:
                 if is_index
                 else get_market_for_stock(normalize_stock_code(code))
             )
+            from src.services.history_loader import get_frozen_target_date
+            frozen_signal_date = get_frozen_target_date()
+            us_premarket_baseline = (
+                market == "us"
+                and frozen_signal_date is not None
+                and current_time is not None
+                and get_market_now(market, current_time=current_time).date() == frozen_signal_date
+                and frozen_signal_date < get_market_now(market).date()
+            )
+            if us_premarket_baseline:
+                portfolio_context = None
+            premarket_bars: Optional[pd.DataFrame] = None
             market_phase_context = build_market_phase_context(
                 market=market,
                 current_time=current_time,
@@ -544,7 +558,7 @@ class StockAnalysisPipeline:
             # Step 1: 获取实时行情（量比、换手率等）- 使用统一入口，自动故障切换
             realtime_quote = None
             try:
-                if self.config.enable_realtime_quote:
+                if self.config.enable_realtime_quote and not us_premarket_baseline:
                     realtime_quote = self.fetcher_manager.get_realtime_quote(code, log_final_failure=False)
                     if realtime_quote:
                         # 股票使用实时行情名称；指数保持注册表中文名为权威显示名。
@@ -570,8 +584,8 @@ class StockAnalysisPipeline:
             # Step 2: 获取筹码分布 - 使用统一入口，带熔断保护
             # 指数目标跳过筹码分布（INDEX_SKIP_MODULES 能力矩阵）
             chip_data = None
-            if is_index and "chip_distribution" in INDEX_SKIP_MODULES:
-                logger.debug(f"{stock_name}({code}) 指数目标跳过筹码分布")
+            if us_premarket_baseline or (is_index and "chip_distribution" in INDEX_SKIP_MODULES):
+                logger.debug(f"{stock_name}({code}) 冻结基准或指数目标跳过非历史筹码分布")
             else:
                 try:
                     chip_data = self.fetcher_manager.get_chip_distribution(code)
@@ -634,6 +648,10 @@ class StockAnalysisPipeline:
                     logger.warning(f"{stock_name}({code}) 基本面聚合失败: {e}")
                     fundamental_context = self.fetcher_manager.build_failed_fundamental_context(code, str(e))
 
+            premarket_financial_audit = (
+                audit_financial_context(fundamental_context, datetime.now(timezone.utc))
+                if us_premarket_baseline else None
+            )
             if is_index and "belong_boards" in INDEX_SKIP_MODULES:
                 logger.debug(f"{stock_name}({code}) 指数目标跳过板块归属")
                 if isinstance(fundamental_context, dict):
@@ -643,6 +661,16 @@ class StockAnalysisPipeline:
                 fundamental_context = self._attach_belong_boards_to_fundamental_context(
                     code,
                     fundamental_context,
+                )
+            model_fundamental_context = fundamental_context
+            if us_premarket_baseline:
+                # A verified filing timestamp does not time-verify every
+                # capital-flow, board or growth field in the provider bundle.
+                report = (fundamental_context or {}).get("financial_report")
+                model_fundamental_context = (
+                    {"financial_report": report}
+                    if premarket_financial_audit.get("status") == "source_verified" and isinstance(report, dict)
+                    else {}
                 )
             market_structure_context = self._build_market_structure_context(
                 code=code,
@@ -683,10 +711,29 @@ class StockAnalysisPipeline:
                             df, realtime_quote, code, market=market
                         )
                     trend_result = self.trend_analyzer.analyze(df, code)
+                    if us_premarket_baseline:
+                        premarket_bars = df.copy()
                     logger.info(f"{stock_name}({code}) 趋势分析: {trend_result.trend_status.value}, "
                               f"买入信号={trend_result.buy_signal.value}, 评分={trend_result.signal_score}")
             except Exception as e:
                 logger.warning(f"{stock_name}({code}) 趋势分析失败: {e}", exc_info=True)
+
+            if us_premarket_baseline:
+                last_bar_date = None
+                if premarket_bars is not None and not premarket_bars.empty:
+                    last_bar_date = self._coerce_daily_market_context_date(
+                        premarket_bars.iloc[-1].get("date")
+                    )
+                if (
+                    trend_result is None
+                    or not getattr(trend_result, "score_components", None)
+                    or last_bar_date != frozen_signal_date
+                ):
+                    logger.error(
+                        "%s 盘前基准 blocked：未取得 %s 完整日线及可核验技术评分",
+                        code, frozen_signal_date,
+                    )
+                    return None
 
             if use_agent:
                 logger.info(f"{stock_name}({code}) 启用 Agent 模式进行分析")
@@ -698,7 +745,7 @@ class StockAnalysisPipeline:
                     stock_name,
                     realtime_quote,
                     chip_data,
-                    fundamental_context,
+                    model_fundamental_context,
                     trend_result,
                     market_phase_context=market_phase_context_dict,
                     market_phase_summary=market_phase_summary,
@@ -706,15 +753,19 @@ class StockAnalysisPipeline:
                     portfolio_context=portfolio_context,
                     market_structure_context=market_structure_context,
                     analysis_target=analysis_target,
+                    premarket_bars=premarket_bars,
+                    premarket_signal_date=frozen_signal_date if us_premarket_baseline else None,
+                    premarket_financial_audit=premarket_financial_audit,
                 )
 
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
             news_context = None
-            persisted_intelligence_context = self._load_persisted_intelligence_context(
-                code=code,
-                stock_name=stock_name,
-                market=market or "cn",
+            persisted_intelligence_context = (
+                None if us_premarket_baseline else self._load_persisted_intelligence_context(
+                    code=code, stock_name=stock_name, market=market or "cn",
+                )
             )
+            premarket_news_audit: list[dict[str, Any]] = []
             news_result_count: Optional[int] = None
             self._emit_progress(46, f"{stock_name}：正在检索新闻与舆情")
             if self.search_service is not None and self.search_service.is_available:
@@ -733,6 +784,28 @@ class StockAnalysisPipeline:
                     stock_name=stock_name,
                     max_searches=5
                 )
+                if us_premarket_baseline and intel_results:
+                    from dataclasses import replace
+                    cutoff = datetime.now(timezone.utc)
+                    intel_results = dict(intel_results)
+                    source_checks = 0
+                    for dimension, response in intel_results.items():
+                        if response and response.success:
+                            audited = []
+                            for item in response.results:
+                                verify_source = source_checks < 3
+                                source_checks += int(verify_source)
+                                audited.append(audit_news_result(item, cutoff, verify_source=verify_source))
+                            premarket_news_audit.extend(audited)
+                            intel_results[dimension] = replace(
+                                response,
+                                results=[
+                                    replace(item, published_date=evidence["published_at_utc"])
+                                    if evidence["status"] == "source_verified" else item
+                                    for item, evidence in zip(response.results, audited)
+                                    if evidence["status"] in {"source_verified", "metadata_verified", "partial"}
+                                ],
+                            )
 
                 # 格式化情报报告
                 if intel_results:
@@ -764,7 +837,7 @@ class StockAnalysisPipeline:
 
             # Step 4.5: Social sentiment intelligence (US stocks only)
             social_evidence_context: Optional[str] = None
-            if self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_stock_code(code):
+            if not us_premarket_baseline and self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_stock_code(code):
                 try:
                     social_context = self.social_sentiment_service.get_social_context(code)
                     if social_context:
@@ -811,7 +884,7 @@ class StockAnalysisPipeline:
                 chip_data,
                 trend_result,
                 stock_name,  # 传入股票名称
-                fundamental_context,
+                model_fundamental_context,
                 market_phase_context=market_phase_context_dict,
                 portfolio_context=portfolio_context,
             )
@@ -823,7 +896,9 @@ class StockAnalysisPipeline:
             )
             if portfolio_context is not None:
                 enhanced_context["portfolio_context"] = dict(portfolio_context)
-            if isinstance(market_structure_context, dict):
+            if us_premarket_baseline:
+                enhanced_context["premarket_signal_date"] = frozen_signal_date.isoformat()
+            if isinstance(market_structure_context, dict) and not us_premarket_baseline:
                 enhanced_context["market_structure_context"] = market_structure_context
             
             # Step 7: 调用 AI 分析（传入增强的上下文和新闻）
@@ -841,7 +916,7 @@ class StockAnalysisPipeline:
                     realtime_quote=realtime_quote,
                     trend_result=trend_result,
                     chip_data=chip_data,
-                    fundamental_context=fundamental_context,
+                    fundamental_context=model_fundamental_context,
                     news_context=news_context,
                     news_result_count=news_result_count,
                     query_id=query_id,
@@ -969,6 +1044,17 @@ class StockAnalysisPipeline:
 
             if result:
                 self._append_daily_data_source(result, context, analysis_target)
+
+            if result and us_premarket_baseline and trend_result is not None and premarket_bars is not None:
+                apply_us_premarket_research(
+                    result,
+                    bars=premarket_bars,
+                    trend=trend_result,
+                    signal_date=frozen_signal_date,
+                    data_quality=(analysis_context_pack_overview or {}).get("data_quality"),
+                    news_audit=premarket_news_audit,
+                    financial_audit=premarket_financial_audit,
+                )
 
             # Step 8: 保存分析历史记录
             if result and result.success:
@@ -1507,6 +1593,9 @@ class StockAnalysisPipeline:
         portfolio_context: Optional[Dict[str, Any]] = None,
         market_structure_context: Optional[Dict[str, Any]] = None,
         analysis_target: Optional[AnalysisTarget] = None,
+        premarket_bars: Optional[pd.DataFrame] = None,
+        premarket_signal_date: Optional[date] = None,
+        premarket_financial_audit: Optional[Dict[str, Any]] = None,
     ) -> Optional[AnalysisResult]:
         """
         使用 Agent 模式分析单只股票。
@@ -1539,15 +1628,21 @@ class StockAnalysisPipeline:
                 "stock_name": stock_name,
                 "report_type": report_type.value,
                 "report_language": report_language,
-                "fundamental_context": fundamental_context,
+                "fundamental_context": (
+                    fundamental_context
+                    if premarket_signal_date is None or (premarket_financial_audit or {}).get("status") == "source_verified"
+                    else {}
+                ),
             }
+            if premarket_signal_date is not None:
+                initial_context["premarket_signal_date"] = premarket_signal_date.isoformat()
             if isinstance(portfolio_context, dict):
                 initial_context["portfolio_context"] = dict(portfolio_context)
             if self.analysis_skills is not None:
                 initial_context["skills"] = self.analysis_skills
             if market_phase_context is not None:
                 initial_context["market_phase_context"] = market_phase_context
-            if isinstance(market_structure_context, dict):
+            if isinstance(market_structure_context, dict) and premarket_signal_date is None:
                 initial_context["market_structure_context"] = market_structure_context
             self._attach_daily_market_context(
                 initial_context,
@@ -1566,7 +1661,7 @@ class StockAnalysisPipeline:
             # executor (_build_user_message) and orchestrator (ctx.set_data)
             # can consume it through the existing news_context channel
             social_evidence_context: Optional[str] = None
-            if self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_stock_code(code):
+            if premarket_signal_date is None and self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_stock_code(code):
                 try:
                     social_context = self.social_sentiment_service.get_social_context(code)
                     if social_context:
@@ -1580,10 +1675,12 @@ class StockAnalysisPipeline:
                 except Exception as e:
                     logger.warning(f"[{code}] Agent mode: social sentiment fetch failed: {e}")
 
-            persisted_intelligence_context = self._load_persisted_intelligence_context(
-                code=code,
-                stock_name=stock_name,
-                market=("cn" if is_index else get_market_for_stock(normalize_stock_code(code)) or "cn"),
+            persisted_intelligence_context = (
+                None if premarket_signal_date is not None else self._load_persisted_intelligence_context(
+                    code=code,
+                    stock_name=stock_name,
+                    market=("cn" if is_index else get_market_for_stock(normalize_stock_code(code)) or "cn"),
+                )
             )
             if persisted_intelligence_context:
                 existing = initial_context.get("news_context")
@@ -1614,7 +1711,7 @@ class StockAnalysisPipeline:
                     market=market,
                     phase=market_phase_context,
                     initial_context=initial_context,
-                    fundamental_context=fundamental_context,
+                    fundamental_context=initial_context["fundamental_context"],
                     query_id=query_id,
                     base_context=analysis_context,
                     portfolio_context=portfolio_context,
@@ -1635,7 +1732,9 @@ class StockAnalysisPipeline:
             # Agent 自己调用搜索工具取证，所以披露计数只能来自这些工具的真实返回；
             # 分析结束后补打的 search_stock_news() 与 Agent 消费的证据无关。
             # 累加器对象在这里持有引用，reset 之后仍可安全读取。
-            news_evidence_token = activate_news_evidence_scope()
+            news_evidence_token = activate_news_evidence_scope(
+                cutoff_at=datetime.now(timezone.utc) if premarket_signal_date is not None else None
+            )
             news_evidence = get_current_news_evidence()
             try:
                 record_llm_run_started(
@@ -1864,11 +1963,22 @@ class StockAnalysisPipeline:
                     analysis_target,
                 )
 
+            if result and premarket_signal_date is not None and trend_result is not None and premarket_bars is not None:
+                apply_us_premarket_research(
+                    result,
+                    bars=premarket_bars,
+                    trend=trend_result,
+                    signal_date=premarket_signal_date,
+                    data_quality=(analysis_context_pack_overview or {}).get("data_quality"),
+                    news_audit=news_evidence.publication_audit if news_evidence is not None else [],
+                    financial_audit=premarket_financial_audit,
+                )
+
             resolved_stock_name = result.name if result and result.name else stock_name
 
             # 保存新闻情报到数据库（Agent 工具结果仅用于 LLM 上下文，未持久化，Fixes #396）
             # 使用 search_stock_news（与 Agent 工具调用逻辑一致），仅 1 次 API 调用，无额外延迟
-            if self.search_service is not None and self.search_service.is_available:
+            if premarket_signal_date is None and self.search_service is not None and self.search_service.is_available:
                 try:
                     news_response = self.search_service.search_stock_news(
                         stock_code=("" if is_index else code),
