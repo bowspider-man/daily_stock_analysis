@@ -19,7 +19,8 @@ from pathlib import Path
 import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as datetime_time, timedelta, timezone
+from zoneinfo import ZoneInfo
 from types import SimpleNamespace
 from typing import List, Dict, Any, Optional, Tuple, Callable
 
@@ -280,6 +281,7 @@ class StockAnalysisPipeline:
         portfolio_context: Optional[Dict[str, Any]] = None,
         daily_market_context_enabled: Optional[bool] = None,
         daily_market_context_allow_generate: bool = True,
+        historical_analysis_date: Optional[date] = None,
     ):
         """
         初始化调度器
@@ -307,6 +309,7 @@ class StockAnalysisPipeline:
             else bool(daily_market_context_enabled)
         )
         self.daily_market_context_allow_generate = daily_market_context_allow_generate
+        self.historical_analysis_date = historical_analysis_date
         
         # 初始化各模块
         self.db = get_db()
@@ -439,7 +442,7 @@ class StockAnalysisPipeline:
             )
 
             # 断点续传检查：如果最新可复用交易日的数据已存在，则跳过
-            if not force_refresh and self.db.has_today_data(code, target_date):
+            if not force_refresh and not getattr(self, "historical_analysis_date", None) and self.db.has_today_data(code, target_date):
                 logger.info(
                     f"{stock_name}({code}) {target_date} 数据已存在，跳过获取（断点续传）"
                 )
@@ -447,7 +450,12 @@ class StockAnalysisPipeline:
 
             # 从数据源获取数据
             logger.info(f"{stock_name}({code}) 开始从数据源获取数据...")
-            df, source_name = self.fetcher_manager.get_daily_data(code, days=30)
+            historical_date = getattr(self, "historical_analysis_date", None)
+            df, source_name = self.fetcher_manager.get_daily_data(
+                code,
+                days=240 if historical_date else 30,
+                end_date=target_date.isoformat() if historical_date else None,
+            )
 
             if df is None or df.empty:
                 return False, "获取数据为空"
@@ -494,7 +502,8 @@ class StockAnalysisPipeline:
         """
         stock_name = code
         try:
-            portfolio_context = getattr(self, "portfolio_context", None)
+            historical_date = getattr(self, "historical_analysis_date", None)
+            portfolio_context = None if historical_date else getattr(self, "portfolio_context", None)
             if not isinstance(portfolio_context, dict):
                 portfolio_context = None
             is_index = (
@@ -509,7 +518,8 @@ class StockAnalysisPipeline:
             from src.services.history_loader import get_frozen_target_date
             frozen_signal_date = get_frozen_target_date()
             us_premarket_baseline = (
-                market == "us"
+                historical_date is None
+                and market == "us"
                 and frozen_signal_date is not None
                 and current_time is not None
                 and get_market_now(market, current_time=current_time).date() == frozen_signal_date
@@ -536,9 +546,10 @@ class StockAnalysisPipeline:
                     market,
                     current_time=current_time,
                 )
-            daily_market_context = self._load_daily_market_context(
-                market,
-                target_date=daily_market_target_date,
+            daily_market_context = (
+                None if historical_date else self._load_daily_market_context(
+                    market, target_date=daily_market_target_date,
+                )
             )
 
             self._emit_progress(18, f"{code}：正在获取行情与筹码数据")
@@ -558,7 +569,7 @@ class StockAnalysisPipeline:
             # Step 1: 获取实时行情（量比、换手率等）- 使用统一入口，自动故障切换
             realtime_quote = None
             try:
-                if self.config.enable_realtime_quote and not us_premarket_baseline:
+                if self.config.enable_realtime_quote and not us_premarket_baseline and not historical_date:
                     realtime_quote = self.fetcher_manager.get_realtime_quote(code, log_final_failure=False)
                     if realtime_quote:
                         # 股票使用实时行情名称；指数保持注册表中文名为权威显示名。
@@ -584,7 +595,7 @@ class StockAnalysisPipeline:
             # Step 2: 获取筹码分布 - 使用统一入口，带熔断保护
             # 指数目标跳过筹码分布（INDEX_SKIP_MODULES 能力矩阵）
             chip_data = None
-            if us_premarket_baseline or (is_index and "chip_distribution" in INDEX_SKIP_MODULES):
+            if historical_date or us_premarket_baseline or (is_index and "chip_distribution" in INDEX_SKIP_MODULES):
                 logger.debug(f"{stock_name}({code}) 冻结基准或指数目标跳过非历史筹码分布")
             else:
                 try:
@@ -602,12 +613,12 @@ class StockAnalysisPipeline:
             # config.is_agent_available() so that users who only configured an
             # API Key for the traditional analysis path are not silently
             # switched to Agent mode (which is slower and more expensive).
-            use_agent = getattr(self.config, 'agent_mode', False)
-            if not use_agent:
+            use_agent = False if historical_date else getattr(self.config, 'agent_mode', False)
+            if not use_agent and not historical_date:
                 if self.analysis_skills:
                     use_agent = True
                     logger.info(f"{stock_name}({code}) Auto-enabled agent mode due to request skills: {self.analysis_skills}")
-            if not use_agent:
+            if not use_agent and not historical_date:
                 # Auto-enable agent mode when specific skills are configured (e.g., scheduled task with strategy)
                 configured_skills = getattr(self.config, 'agent_skills', [])
                 if configured_skills and configured_skills != ['all']:
@@ -628,7 +639,7 @@ class StockAnalysisPipeline:
                 "lhb",
                 "corporate_events",
             }
-            if is_index and INDEX_SKIP_MODULES.intersection(fundamental_modules):
+            if historical_date or (is_index and INDEX_SKIP_MODULES.intersection(fundamental_modules)):
                 logger.debug(f"{stock_name}({code}) 指数目标跳过基本面聚合")
                 fundamental_context = self.fetcher_manager.build_not_supported_fundamental_context(
                     code,
@@ -652,7 +663,7 @@ class StockAnalysisPipeline:
                 audit_financial_context(fundamental_context, datetime.now(timezone.utc))
                 if us_premarket_baseline else None
             )
-            if is_index and "belong_boards" in INDEX_SKIP_MODULES:
+            if historical_date or (is_index and "belong_boards" in INDEX_SKIP_MODULES):
                 logger.debug(f"{stock_name}({code}) 指数目标跳过板块归属")
                 if isinstance(fundamental_context, dict):
                     fundamental_context = dict(fundamental_context)
@@ -672,7 +683,7 @@ class StockAnalysisPipeline:
                     if premarket_financial_audit.get("status") == "source_verified" and isinstance(report, dict)
                     else {}
                 )
-            market_structure_context = self._build_market_structure_context(
+            market_structure_context = None if historical_date else self._build_market_structure_context(
                 code=code,
                 stock_name=stock_name,
                 market=market,
@@ -706,7 +717,7 @@ class StockAnalysisPipeline:
                 if historical_bars:
                     df = pd.DataFrame([bar.to_dict() for bar in historical_bars])
                     # Issue #234: Augment with realtime for intraday MA calculation
-                    if self.config.enable_realtime_quote and realtime_quote:
+                    if self.config.enable_realtime_quote and realtime_quote and not historical_date:
                         df = self._augment_historical_with_realtime(
                             df, realtime_quote, code, market=market
                         )
@@ -761,7 +772,7 @@ class StockAnalysisPipeline:
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
             news_context = None
             persisted_intelligence_context = (
-                None if us_premarket_baseline else self._load_persisted_intelligence_context(
+                None if us_premarket_baseline or historical_date else self._load_persisted_intelligence_context(
                     code=code, stock_name=stock_name, market=market or "cn",
                 )
             )
@@ -837,7 +848,7 @@ class StockAnalysisPipeline:
 
             # Step 4.5: Social sentiment intelligence (US stocks only)
             social_evidence_context: Optional[str] = None
-            if not us_premarket_baseline and self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_stock_code(code):
+            if not historical_date and not us_premarket_baseline and self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_stock_code(code):
                 try:
                     social_context = self.social_sentiment_service.get_social_context(code)
                     if social_context:
@@ -898,6 +909,8 @@ class StockAnalysisPipeline:
                 enhanced_context["portfolio_context"] = dict(portfolio_context)
             if us_premarket_baseline:
                 enhanced_context["premarket_signal_date"] = frozen_signal_date.isoformat()
+            if historical_date:
+                enhanced_context["historical_analysis_date"] = historical_date.isoformat()
             if isinstance(market_structure_context, dict) and not us_premarket_baseline:
                 enhanced_context["market_structure_context"] = market_structure_context
             
@@ -996,9 +1009,14 @@ class StockAnalysisPipeline:
             if result:
                 self._emit_progress(94, f"{stock_name}：正在校验并整理分析结果")
                 result.query_id = query_id
-                realtime_data = enhanced_context.get('realtime', {})
-                result.current_price = realtime_data.get('price')
-                result.change_pct = realtime_data.get('change_pct')
+                if historical_date:
+                    session_bar = context.get('today', {})
+                    result.current_price = session_bar.get('close')
+                    result.change_pct = context.get('price_change_ratio')
+                else:
+                    realtime_data = enhanced_context.get('realtime', {})
+                    result.current_price = realtime_data.get('price')
+                    result.change_pct = realtime_data.get('change_pct')
 
             # Step 7.6: chip_structure fallback (Issue #589) and unavailable collapse
             if result:
@@ -3472,11 +3490,27 @@ class StockAnalysisPipeline:
         """
         logger.info(f"========== 开始处理 {code} ==========")
 
-        from src.services.history_loader import set_frozen_target_date, reset_frozen_target_date
+        historical_date = getattr(self, "historical_analysis_date", None)
+        if historical_date is not None:
+            from src.core.trading_calendar import MARKET_TIMEZONE
+            target_market = (
+                "cn" if analysis_target is not None and analysis_target.asset_type == ParseStatus.INDEX
+                else get_market_for_stock(normalize_stock_code(code))
+            )
+            current_time = datetime.combine(
+                historical_date, datetime_time.max,
+                tzinfo=ZoneInfo(MARKET_TIMEZONE.get(target_market, "Asia/Shanghai")),
+            ).astimezone(timezone.utc)
+
+        from src.services.history_loader import (
+            set_frozen_target_date, reset_frozen_target_date,
+            set_historical_target_date, reset_historical_target_date,
+        )
         frozen_td = self._resolve_resume_target_date(
             code, current_time=current_time, analysis_target=analysis_target
         )
         token = set_frozen_target_date(frozen_td)
+        historical_token = set_historical_target_date(historical_date) if historical_date else None
         effective_query_id = analysis_query_id or getattr(self, "query_id", None) or uuid.uuid4().hex
         effective_trace_id = getattr(self, "trace_id", None) or effective_query_id
         diag_token = None
@@ -3496,6 +3530,9 @@ class StockAnalysisPipeline:
             
             if not success:
                 logger.warning(f"[{code}] 数据获取失败: {error}")
+                if historical_date is not None:
+                    logger.error("[%s] 历史交易日 %s 日线不可用，停止分析以避免错误日期数据", code, historical_date)
+                    return None
                 # 即使获取失败，也尝试用已有数据分析
             else:
                 self._emit_progress(16, f"{code}：行情数据准备完成")
@@ -3538,6 +3575,8 @@ class StockAnalysisPipeline:
             return None
         finally:
             reset_run_diagnostic_context(diag_token)
+            if historical_token is not None:
+                reset_historical_target_date(historical_token)
             reset_frozen_target_date(token)
     
     def run(
@@ -3622,7 +3661,7 @@ class StockAnalysisPipeline:
         
         # === 批量预取实时行情（优化：避免每只股票都触发全量拉取）===
         # 只有股票数量 >= 5 时才进行预取，少量股票直接逐个查询更高效
-        if len(stock_codes) >= 5:
+        if len(stock_codes) >= 5 and not getattr(self, "historical_analysis_date", None):
             daily_prefetch_count = self.fetcher_manager.prefetch_daily_klines(stock_codes, days=30)
             if daily_prefetch_count > 0:
                 logger.info(
@@ -3788,19 +3827,28 @@ class StockAnalysisPipeline:
         with notify_lock:
             try:
                 if report_type == ReportType.FULL:
-                    report_content = self.notifier.generate_dashboard_report([result])
+                    report_content = self._generate_aggregate_report([result], report_type)
                     logger.info(f"[{stock_code}] 使用完整报告格式")
                 elif report_type == ReportType.BRIEF:
-                    report_content = self.notifier.generate_brief_report([result])
+                    report_content = self._generate_aggregate_report([result], report_type)
                     logger.info(f"[{stock_code}] 使用简洁报告格式")
                 else:
-                    report_content = self.notifier.generate_single_stock_report(result)
+                    single_kwargs = {}
+                    if getattr(self, "historical_analysis_date", None) and _supports_explicit_keyword(
+                        self.notifier.generate_single_stock_report, "report_date"
+                    ):
+                        single_kwargs["report_date"] = self.historical_analysis_date.isoformat()
+                    report_content = self.notifier.generate_single_stock_report(result, **single_kwargs)
                     logger.info(f"[{stock_code}] 使用精简报告格式")
 
                 save_report = getattr(self.notifier, "save_report_to_file", None)
                 if callable(save_report):
                     try:
-                        date_str = datetime.now().strftime('%Y%m%d')
+                        date_str = (
+                            self.historical_analysis_date.strftime('%Y%m%d')
+                            if getattr(self, "historical_analysis_date", None)
+                            else datetime.now().strftime('%Y%m%d')
+                        )
                         filename = f"report_{date_str}_{stock_code}.md"
                         filepath = save_report(report_content, filename=filename)
                         logger.info(f"[{stock_code}] 单股报告已保存到本地: {filepath}")
@@ -3893,7 +3941,9 @@ class StockAnalysisPipeline:
             return None
 
         try:
-            filepath = self.notifier.save_report_to_file(report)
+            historical_date = getattr(self, "historical_analysis_date", None)
+            filename = f"report_{historical_date:%Y%m%d}.md" if historical_date else None
+            filepath = self.notifier.save_report_to_file(report, filename=filename)
             if filepath:
                 filepath = str(filepath)
                 self._last_local_report_path = filepath
@@ -3906,7 +3956,7 @@ class StockAnalysisPipeline:
             logger.error(f"保存本地报告失败: {e}")
 
         logger.warning("尝试回退到本地文件系统路径保存聚合报告")
-        fallback_path = self._fallback_save_report_to_file(report)
+        fallback_path = self._fallback_save_report_to_file(report, filename=filename)
         if fallback_path:
             self._last_local_report_path = fallback_path
             self._last_local_report_error = None
@@ -4515,8 +4565,16 @@ class StockAnalysisPipeline:
     ) -> str:
         """Generate aggregate report with backward-compatible notifier fallback."""
         generator = getattr(self.notifier, "generate_aggregate_report", None)
+        historical_date = getattr(self, "historical_analysis_date", None)
+        report_date = historical_date.isoformat() if historical_date else None
         if callable(generator):
+            if report_date and _supports_explicit_keyword(generator, "report_date"):
+                return generator(results, report_type, report_date=report_date)
             return generator(results, report_type)
         if report_type == ReportType.BRIEF and hasattr(self.notifier, "generate_brief_report"):
+            if report_date and _supports_explicit_keyword(self.notifier.generate_brief_report, "report_date"):
+                return self.notifier.generate_brief_report(results, report_date=report_date)
             return self.notifier.generate_brief_report(results)
+        if report_date and _supports_explicit_keyword(self.notifier.generate_dashboard_report, "report_date"):
+            return self.notifier.generate_dashboard_report(results, report_date=report_date)
         return self.notifier.generate_dashboard_report(results)

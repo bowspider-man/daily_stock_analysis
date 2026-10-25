@@ -14,7 +14,7 @@ import logging
 import inspect
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, Optional
 import uuid
 
@@ -184,6 +184,7 @@ def run_market_review(
     save_report_file: bool = True,
     persist_history: bool = True,
     trigger_source: str = "cli",
+    analysis_date: Optional[date] = None,
 ) -> Optional[str] | Optional[MarketReviewRunResult]:
     """
     执行大盘复盘分析
@@ -243,6 +244,7 @@ def run_market_review(
                     analyzer=analyzer,
                     region=mkt,
                     config=runtime_config,
+                    analysis_date=analysis_date,
                 )
                 review_result = mkt_analyzer.run_daily_review_with_snapshot()
                 mkt_report = review_result.report
@@ -281,6 +283,7 @@ def run_market_review(
                 analyzer=analyzer,
                 region=run_region,
                 config=runtime_config,
+                analysis_date=analysis_date,
             )
             review_result = market_analyzer.run_daily_review_with_snapshot()
             review_report = review_result.report
@@ -316,7 +319,7 @@ def run_market_review(
             )
             if save_report_file:
                 # 保存报告到文件
-                date_str = datetime.now().strftime('%Y%m%d')
+                date_str = analysis_date.strftime('%Y%m%d') if analysis_date else datetime.now().strftime('%Y%m%d')
                 report_filename = f"market_review_{date_str}.md"
                 filepath = notifier.save_report_to_file(
                     markdown_report,

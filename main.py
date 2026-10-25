@@ -506,9 +506,14 @@ def _compute_trading_day_filter(
         get_market_for_stock,
         get_open_markets_today,
         compute_effective_region,
+        is_market_open,
     )
 
-    open_markets = get_open_markets_today()
+    requested_date = getattr(args, 'analysis_date', None)
+    open_markets = (
+        {market for market in ('cn', 'hk', 'us', 'jp', 'kr', 'tw') if is_market_open(market, requested_date)}
+        if requested_date is not None else get_open_markets_today()
+    )
     filtered_codes = []
     for code in stock_codes:
         mkt = get_market_for_stock(code)
@@ -956,6 +961,7 @@ def run_full_analysis(
         should_use_daily_market_context = (
             should_run_market_review
             and getattr(config, 'daily_market_context_enabled', True)
+            and getattr(args, 'analysis_date', None) is None
         )
         requested_analysis_date = getattr(args, 'analysis_date', None)
         if requested_analysis_date is not None:
@@ -1000,6 +1006,7 @@ def run_full_analysis(
             save_context_snapshot=save_context_snapshot,
             daily_market_context_enabled=should_use_daily_market_context,
             daily_market_context_allow_generate=should_use_daily_market_context,
+            historical_analysis_date=requested_analysis_date,
         )
         if should_use_daily_market_context:
             # Prompt-side context can reuse historical summaries, while full-merge
@@ -1126,6 +1133,7 @@ def run_full_analysis(
                     send_notification=not args.no_notify,
                     merge_notification=merge_notification,
                     override_region=market_review_region,
+                    analysis_date=requested_analysis_date,
                     query_id=query_id,
                     trigger_source=review_trigger_source,
                 )
@@ -1813,8 +1821,12 @@ def main() -> int:
             # explicit --market-review invocation when the flag is disabled.
             effective_region = None
             if not getattr(args, 'force_run', False) and getattr(config, 'trading_day_check_enabled', True):
-                from src.core.trading_calendar import get_open_markets_today, compute_effective_region as _compute_region
-                open_markets = get_open_markets_today()
+                from src.core.trading_calendar import get_open_markets_today, compute_effective_region as _compute_region, is_market_open
+                requested_date = getattr(args, 'analysis_date', None)
+                open_markets = (
+                    {market for market in ('cn', 'hk', 'us', 'jp', 'kr', 'tw') if is_market_open(market, requested_date)}
+                    if requested_date is not None else get_open_markets_today()
+                )
                 effective_region = _compute_region(
                     getattr(config, 'market_review_region', 'cn') or 'cn', open_markets
                 )
@@ -1833,6 +1845,7 @@ def main() -> int:
                 search_service=search_service,
                 send_notification=not args.no_notify,
                 override_region=effective_region,
+                analysis_date=getattr(args, 'analysis_date', None),
                 trigger_source="cli",
             )
             return 0 if market_review_result else 1

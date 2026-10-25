@@ -1998,7 +1998,9 @@ class NotificationService(
             lines.append(f"*{labels['analysis_model_label']}: {', '.join(models)}*")
         return "\n".join(lines)
 
-    def generate_single_stock_report(self, result: AnalysisResult) -> str:
+    def generate_single_stock_report(
+        self, result: AnalysisResult, report_date: Optional[str] = None
+    ) -> str:
         """
         生成单只股票的分析报告（用于单股推送模式 #55）
 
@@ -2010,7 +2012,7 @@ class NotificationService(
         Returns:
             Markdown 格式的单股报告
         """
-        report_date = datetime.now().strftime('%Y-%m-%d %H:%M')
+        report_date = report_date or datetime.now().strftime('%Y-%m-%d %H:%M')
         report_language = self._get_report_language(result)
         labels = get_report_labels(report_language)
         signal_text, signal_emoji, _ = self._get_signal_level(result)
