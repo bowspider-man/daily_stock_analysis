@@ -19,7 +19,7 @@ import random
 import time
 from threading import BoundedSemaphore, RLock, Thread
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional, List, Tuple, Dict, Any
 
 import pandas as pd
@@ -39,6 +39,24 @@ logger = logging.getLogger(__name__)
 
 # === 标准化列名定义 ===
 STANDARD_COLUMNS = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
+
+
+def _clip_daily_data_to_end_date(
+    df: pd.DataFrame, end_date: Optional[str], required_date=None,
+) -> pd.DataFrame:
+    """Enforce an as-of boundary even when a provider ignores its date arguments."""
+    if not end_date or df is None or df.empty:
+        return df
+    if 'date' not in df.columns:
+        raise ValueError('historical daily data has no date column')
+    dates = pd.to_datetime(df['date'], errors='coerce', utc=True).dt.date
+    if bool(dates.isna().any()):
+        raise ValueError('historical daily data has invalid dates')
+    cutoff = datetime.fromisoformat(end_date).date()
+    clipped = df.loc[dates <= cutoff].copy()
+    if required_date is not None and not bool((dates.loc[clipped.index] == required_date).any()):
+        return clipped.iloc[0:0].copy()
+    return clipped
 
 
 def unwrap_exception(exc: Exception) -> Exception:
@@ -1944,6 +1962,20 @@ class DataFetcherManager:
             DataFetchError: 非指数代码的所有数据源都失败时抛出
         """
         from .us_index_mapping import is_us_index_code, is_us_stock_code
+        from src.services.history_loader import get_historical_target_date
+
+        historical_date = get_historical_target_date()
+        if historical_date is not None:
+            requested_end = datetime.fromisoformat(end_date).date() if end_date else historical_date
+            end_date = min(requested_end, historical_date).isoformat()
+            if start_date is None:
+                start_date = (historical_date - timedelta(days=int(days * 1.8) + 20)).isoformat()
+        # Yahoo's end is exclusive; request one extra calendar day and then
+        # enforce the inclusive as-of cutoff on every provider result below.
+        provider_end_date = (
+            (datetime.fromisoformat(end_date).date() + timedelta(days=1)).isoformat()
+            if historical_date is not None else end_date
+        )
 
         raw_stock_code = (stock_code or "").strip()
         target = parse_analysis_target(raw_stock_code)
@@ -1952,12 +1984,13 @@ class DataFetcherManager:
             reason = target.unsupported_reason or "unsupported analysis target"
             raise DataFetchError(f"{raw_stock_code}: {reason}")
         if target.asset_type == ParseStatus.INDEX:
-            return self._get_cn_index_daily_data(
+            df, source = self._get_cn_index_daily_data(
                 target,
                 start_date=start_date,
-                end_date=end_date,
+                end_date=provider_end_date,
                 days=days,
             )
+            return _clip_daily_data_to_end_date(df, end_date, historical_date), source
 
         # Normalize code (strip SH/SZ prefix etc.)
         stock_code = normalize_stock_code(stock_code)
@@ -2035,9 +2068,10 @@ class DataFetcherManager:
                             "get_daily_data",
                             stock_code=stock_code,
                             start_date=start_date,
-                            end_date=end_date,
+                            end_date=provider_end_date,
                             days=days,
                         )
+                        df = _clip_daily_data_to_end_date(df, end_date, historical_date)
                         if df is not None and not df.empty:
                             duration_ms = int((time.time() - attempt_start) * 1000)
                             record_provider_run(
@@ -2114,10 +2148,11 @@ class DataFetcherManager:
                     "get_daily_data",
                     stock_code=stock_code,
                     start_date=start_date,
-                    end_date=end_date,
+                    end_date=provider_end_date,
                     days=days
                 )
                 
+                df = _clip_daily_data_to_end_date(df, end_date, historical_date)
                 if df is not None and not df.empty:
                     duration_ms = int((time.time() - attempt_start) * 1000)
                     record_provider_run(

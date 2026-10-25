@@ -198,6 +198,10 @@ To get started quickly, you need at minimum:
 4. Select run mode
 5. Click green `Run workflow` to confirm
 
+For a historical scan, set `analysis_date` to a trading session (for example, `2026-10-23`), enter one or more symbols in `stocks` (such as `AAPL` or `AAPL,MSFT`), and choose `stocks-only`. To include a US market recap, choose `full` and set `market_review_region` to `us`. For a market recap alone, choose `market-only` with `market_review_region=us`; `stocks` may be empty. The trading-day check uses the requested historical date, so a weekend launch does not need `force_run`. The equivalent CLI command is `python main.py --stocks AAPL,MSFT --analysis-date 2026-10-23 --no-market-review`.
+
+Historical daily bars and technical indicators are capped at the requested session. If its completed bar is unavailable, that stock produces no report. Live quotes and other market fields without a historical snapshot are omitted. Later news is allowed only when its publication date and retrospective nature are clear. Historical market recaps currently support the `us` region only; other historical recap regions fail explicitly. Current-day recaps retain their existing region support.
+
 ### 5. Done!
 
 Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.

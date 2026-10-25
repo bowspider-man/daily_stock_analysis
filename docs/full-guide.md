@@ -871,6 +871,10 @@ schedule:
 3. 若当天是非交易日且希望仍执行，将 `force_run` 设为 `true`
 4. 点击 `Run workflow`
 
+历史查询：在 `analysis_date` 填入交易日（例如 `2026-10-23`），`stocks` 填一只或多只股票代码（如 `AAPL` 或 `AAPL,MSFT`），并选 `stocks-only`；若还要美股大盘复盘，选 `full` 并将 `market_review_region` 填为 `us`。只查大盘时选 `market-only`、`market_review_region=us`，`stocks` 可留空。历史日期的交易日检查以所填日期为准，周末发起历史查询无需 `force_run`。CLI 等价入口为 `python main.py --stocks AAPL,MSFT --analysis-date 2026-10-23 --no-market-review`，或 `python main.py --market-review --analysis-date 2026-10-23`（后者需配置 `MARKET_REVIEW_REGION=us`）。
+
+历史行情以目标交易日收盘为界：日线和技术指标不能使用更晚的 K 线，目标日缺少完整日线时该股票不生成报告；实时行情、即时筹码和无法按日回溯的基本面不参与历史分析。新闻允许晚于目标日，但报告须标注发布日期并区分事后信息。历史大盘复盘目前仅支持 `us`，其它地区的历史大盘复盘会明确失败；普通当日复盘保持原有地区支持范围。
+
 ### 本地定时任务
 
 内建的定时任务调度器支持每天在指定时间（默认 18:00）运行分析。

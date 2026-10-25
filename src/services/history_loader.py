@@ -26,6 +26,9 @@ _CACHE_MIN_RECORDS = 30
 _frozen_target_date: contextvars.ContextVar[Optional[date]] = contextvars.ContextVar(
     "_frozen_target_date", default=None,
 )
+_historical_target_date: contextvars.ContextVar[Optional[date]] = contextvars.ContextVar(
+    "_historical_target_date", default=None,
+)
 
 
 def set_frozen_target_date(d: date) -> contextvars.Token:
@@ -38,6 +41,18 @@ def get_frozen_target_date() -> Optional[date]:
 
 def reset_frozen_target_date(token: contextvars.Token) -> None:
     _frozen_target_date.reset(token)
+
+
+def set_historical_target_date(d: date) -> contextvars.Token:
+    return _historical_target_date.set(d)
+
+
+def get_historical_target_date() -> Optional[date]:
+    return _historical_target_date.get()
+
+
+def reset_historical_target_date(token: contextvars.Token) -> None:
+    _historical_target_date.reset(token)
 
 
 # ---------------------------------------------------------------------------

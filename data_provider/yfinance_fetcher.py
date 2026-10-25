@@ -207,12 +207,13 @@ class YfinanceFetcher(BaseFetcher):
 
         try:
             # 使用 yfinance 下载数据
+            from src.services.history_loader import get_historical_target_date
             df = yf.download(
                 tickers=yf_code,
                 start=start_date,
                 end=end_date,
                 progress=False,  # 禁止进度条
-                auto_adjust=True,  # 自动调整价格（复权）
+                auto_adjust=get_historical_target_date() is None,
                 multi_level_index=True
             )
 

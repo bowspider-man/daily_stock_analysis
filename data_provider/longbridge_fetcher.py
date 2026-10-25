@@ -881,6 +881,7 @@ class LongbridgeFetcher(BaseFetcher):
             raise RuntimeError("Longbridge QuoteContext not available")
 
         from longbridge.openapi import Period, AdjustType
+        from src.services.history_loader import get_historical_target_date
 
         start_dt = datetime.strptime(start_date, "%Y-%m-%d").date()
         end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
@@ -889,7 +890,7 @@ class LongbridgeFetcher(BaseFetcher):
             candles = ctx.history_candlesticks_by_date(
                 symbol,
                 Period.Day,
-                AdjustType.ForwardAdjust,
+                AdjustType.NoAdjust if get_historical_target_date() else AdjustType.ForwardAdjust,
                 start_dt,
                 end_dt,
             )

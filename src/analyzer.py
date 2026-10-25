@@ -4045,6 +4045,19 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
         config = self._get_runtime_config()
         report_language = normalize_report_language(getattr(config, "report_language", "zh"))
         system_prompt = self._get_analysis_system_prompt(report_language, stock_code=code)
+        if context.get("historical_analysis_date"):
+            as_of = context["historical_analysis_date"]
+            system_prompt += (
+                f"\n\n## Historical session review / 历史交易日复盘\n"
+                f"The user explicitly requested the completed session {as_of}. "
+                "All prices, daily bars, K-lines, indicators, levels and trading conclusions "
+                "must be based only on data through that session. Treat missing historical "
+                "fields as unavailable; never substitute a current quote. Later-published news "
+                "may be mentioned only with its publication date and clearly separated from "
+                "what was known at the session close. Do not call this requested historical "
+                "report expired or tell the user to use a newer report. "
+                "用户主动查询历史行情，不得将该报告称为过期报告或要求改看最新报告。"
+            )
         if context.get("premarket_signal_date"):
             signal_date = context["premarket_signal_date"]
             system_prompt += (

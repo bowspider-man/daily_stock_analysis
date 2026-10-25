@@ -6,7 +6,7 @@ on:
     inputs:
       stocks:
         description: '要扫描的股票代码，逗号分隔'
-        required: true
+        required: false
         type: string
       mode:
         description: '运行模式'
@@ -24,6 +24,11 @@ on:
         type: boolean
       analysis_date:
         description: '分析日期（YYYY-MM-DD；留空则使用当前有效交易日）'
+        required: false
+        default: ''
+        type: string
+      market_review_region:
+        description: '大盘复盘市场（仅 market-only/full 使用）'
         required: false
         default: ''
         type: string
@@ -420,7 +425,7 @@ jobs:
           # 自选股配置
           # ==========================================
           STOCK_LIST: ${{ github.event.inputs.stocks }}
-          MARKET_REVIEW_REGION: ${{ vars.MARKET_REVIEW_REGION || secrets.MARKET_REVIEW_REGION || 'cn' }}
+          MARKET_REVIEW_REGION: ${{ github.event.inputs.market_review_region || vars.MARKET_REVIEW_REGION || secrets.MARKET_REVIEW_REGION || 'cn' }}
           MARKET_REVIEW_COLOR_SCHEME: ${{ vars.MARKET_REVIEW_COLOR_SCHEME || secrets.MARKET_REVIEW_COLOR_SCHEME || 'green_up' }}
           
           # ==========================================
@@ -448,7 +453,8 @@ jobs:
           
         run: |
           # stocks is supplied explicitly through workflow_dispatch.
-          if [ -z "${STOCK_LIST:-}" ]; then
+          MODE="${{ github.event.inputs.mode || 'full' }}"
+          if [ "$MODE" != "market-only" ] && [ -z "${STOCK_LIST:-}" ]; then
             echo "::error::workflow_dispatch input stocks is required"
             exit 1
           fi
@@ -464,7 +470,6 @@ jobs:
           fi
 
           # 判断运行模式
-          MODE="${{ github.event.inputs.mode || 'full' }}"
           
           echo "=========================================="
           echo "🚀 A股自选股智能分析系统"

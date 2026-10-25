@@ -14,7 +14,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from inspect import getattr_static
 from typing import Optional, Dict, Any, List
 
@@ -137,6 +137,7 @@ class MarketAnalyzer:
         analyzer=None,
         region: str = "cn",
         config: Optional[Any] = None,
+        analysis_date: Optional[date] = None,
     ):
         """
         初始化大盘分析器
@@ -154,6 +155,7 @@ class MarketAnalyzer:
         self.region = region if region in ("cn", "us", "hk", "jp", "kr") else "cn"
         self.profile: MarketProfile = get_profile(self.region)
         self.strategy = get_market_strategy_blueprint(self.region)
+        self.analysis_date = analysis_date
 
     def _log_context(self) -> str:
         return f"component=market_review region={self.region}"
@@ -556,11 +558,18 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         Returns:
             MarketOverview: 市场概览数据对象
         """
-        today = datetime.now().strftime('%Y-%m-%d')
+        historical_date = getattr(self, "analysis_date", None)
+        today = historical_date.isoformat() if historical_date else datetime.now().strftime('%Y-%m-%d')
         overview = MarketOverview(date=today)
         
         # 1. 获取主要指数行情（按 region 切换 A 股/美股）
-        overview.indices = self._get_main_indices()
+        overview.indices = (
+            self._get_historical_us_indices() if historical_date else self._get_main_indices()
+        )
+
+        if historical_date:
+            # Current breadth/sector endpoints cannot be replayed for an old session.
+            return overview
 
         # 2. 获取涨跌统计（A 股有，美股无等效数据）
         if self.profile.has_market_stats:
@@ -575,6 +584,47 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
         # self._get_north_flow(overview)
         
         return overview
+
+    def _get_historical_us_indices(self) -> List[MarketIndex]:
+        """Build an as-of US overview from daily bars; never use live index quotes."""
+        if self.region != "us":
+            raise ValueError("historical market review currently supports only the US region")
+        target = self.analysis_date
+        start = (target - timedelta(days=12)).isoformat()
+        result: List[MarketIndex] = []
+        for code, name in (
+            ("SPX", "标普500指数"), ("IXIC", "纳斯达克综合指数"),
+            ("DJI", "道琼斯工业指数"), ("VIX", "VIX恐慌指数"),
+        ):
+            try:
+                frame, _source = self.data_manager.get_daily_data(
+                    code, start_date=start,
+                    end_date=(target + timedelta(days=1)).isoformat(), days=10,
+                )
+                if frame is None or frame.empty or "date" not in frame.columns:
+                    raise ValueError("missing dated bars")
+                dated = frame.copy()
+                dated["date"] = pd.to_datetime(dated["date"], errors="coerce", utc=True).dt.date
+                dated = dated.loc[dated["date"].notna() & (dated["date"] <= target)]
+                dated = dated.sort_values("date").drop_duplicates("date", keep="last")
+                if len(dated) < 2 or dated.iloc[-1]["date"] != target:
+                    raise ValueError(f"no completed bar for {target}")
+                last, previous = dated.iloc[-1], dated.iloc[-2]
+                close, prev_close = float(last["close"]), float(previous["close"])
+                result.append(MarketIndex(
+                    code=code, name=name, current=close, prev_close=prev_close,
+                    change=close - prev_close,
+                    change_pct=(close / prev_close - 1) * 100 if prev_close else 0,
+                    open=float(last["open"]), high=float(last["high"]),
+                    low=float(last["low"]), volume=float(last.get("volume") or 0),
+                    amount=float(last.get("amount") or 0),
+                    amplitude=(float(last["high"]) - float(last["low"])) / prev_close * 100 if prev_close else 0,
+                ))
+            except Exception as exc:
+                if code != "VIX":
+                    raise ValueError(f"{code} historical index data unavailable for {target}: {exc}") from exc
+                logger.warning("VIX historical bar unavailable for %s: %s", target, exc)
+        return result
 
     
     def _get_main_indices(self) -> List[MarketIndex]:
@@ -1652,6 +1702,14 @@ Focus on index trend, liquidity, and sector rotation to shape the next-session t
     def _build_review_prompt(self, overview: MarketOverview, news: List) -> str:
         """构建复盘报告 Prompt"""
         review_language = self._get_review_language()
+        historical_guidance = (
+            f"This is an explicitly requested historical recap for {overview.date}. "
+            "All index prices and market conclusions must describe that session only. "
+            "Later news may be included only with publication dates and clearly labeled as later context. "
+            "Do not call the report expired or direct the reader to a newer report. "
+            "用户主动查询历史行情，不得称报告已过期或要求改看最新报告。"
+            if getattr(self, "analysis_date", None) else ""
+        )
         # Korean reuses the English structural template but the model is told to
         # write the entire shell, headings, guidance and conclusion in Korean.
         shell_language_label = "Korean (한국어)" if self._get_output_language() == "ko" else "English"
@@ -1790,6 +1848,7 @@ Concept lagging: {bottom_concepts_text if bottom_concepts_text else "N/A"}"""
 - Use emoji sparingly in headings (at most one per heading)
 - The entire fixed shell, headings, guidance, and conclusion must be in {shell_language_label}
 {data_boundary_requirement}
+{historical_guidance}
 
 ---
 
@@ -1844,6 +1903,7 @@ Output the report content directly, no extra commentary.
 - {workflow_hint}
 - 不要重复列出已由系统注入的表格数据；正文负责解释表格背后的含义
 {data_boundary_requirement}
+{historical_guidance}
 
 ---
 
@@ -1954,10 +2014,19 @@ Output the report content directly, no extra commentary.
                 "kr": "Korea Market Recap",
             }
             market_name = market_names.get(self.region, "A-share Market Recap")
+            market_scope = self._get_market_scope_name(template_language)
+            session_summary = (
+                f"The {overview.date} session in {market_scope}"
+                if getattr(self, "analysis_date", None) else f"Today's {market_scope}"
+            )
+            review_time = (
+                f"Review Session: {overview.date}" if getattr(self, "analysis_date", None)
+                else f"Review Time: {datetime.now().strftime('%H:%M')}"
+            )
             report = f"""## {overview.date} {market_name}
 
 ### 1. Market Summary
-Today's {self._get_market_scope_name(template_language)} showed **{market_mood}**.
+{session_summary} showed **{market_mood}**.
 
 ### 2. Major Indices
 {indices_text or "- No index data available"}
@@ -1969,7 +2038,7 @@ Market conditions can change quickly. The data above is for reference only and d
 {self._get_strategy_markdown_block(template_language)}
 
 ---
-*Review Time: {datetime.now().strftime('%H:%M')}*
+*{review_time}*
 """
             return report
 
@@ -2033,7 +2102,7 @@ Market conditions can change quickly. The data above is for reference only and d
 - 市场有风险，投资需谨慎。以上数据仅供参考，不构成投资建议。
 
 ---
-*复盘时间: {datetime.now().strftime('%H:%M')}*
+*{'复盘交易日: ' + overview.date if getattr(self, 'analysis_date', None) else '复盘时间: ' + datetime.now().strftime('%H:%M')}*
 """
     
     def _run_daily_review_parts(self) -> MarketLightReviewResult:
