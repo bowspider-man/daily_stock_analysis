@@ -443,6 +443,14 @@ class NotificationService(
         report_date: Optional[str] = None,
     ) -> str:
         """Generate the aggregate report content used by merge/save/push paths."""
+        if results and all(
+            getattr(result, "is_model_free_report", False) for result in results
+        ):
+            return self._generate_model_free_data_report(
+                results,
+                report_date=report_date,
+                report_language=self._get_report_language(results),
+            )
         normalized_type = self._normalize_report_type(report_type)
         if normalized_type == ReportType.BRIEF:
             return self.generate_brief_report(results, report_date=report_date)
@@ -1109,6 +1117,168 @@ class NotificationService(
 
         return "\n".join(report_lines)
 
+    def _generate_model_free_data_report(
+        self,
+        results: List[AnalysisResult],
+        *,
+        report_date: Optional[str],
+        report_language: str,
+    ) -> str:
+        """Render only provider data and deterministic technical calculations."""
+        labels = get_report_labels(report_language)
+        if report_date is None:
+            report_date = datetime.now().strftime("%Y-%m-%d")
+
+        if report_language == "en":
+            title = "Data Report"
+            news_heading = "News Headlines"
+            technical_heading = "Technical Data"
+            point_heading = "Formula Price Levels"
+            trend_label = "Trend Status"
+            volume_status_label = "Volume Status"
+            technical_strength = "Trend Strength"
+            sources_label = "Data Sources"
+        elif report_language == "ko":
+            title = "데이터 보고서"
+            news_heading = "뉴스 제목"
+            technical_heading = "기술 데이터"
+            point_heading = "계산 가격 수준"
+            trend_label = "추세 상태"
+            volume_status_label = "거래량 상태"
+            technical_strength = "추세 강도"
+            sources_label = "데이터 출처"
+        else:
+            title = "数据报告"
+            news_heading = "新闻标题"
+            technical_heading = "数据透视"
+            point_heading = "公式计算价位"
+            trend_label = "趋势状态"
+            volume_status_label = "成交量状态"
+            technical_strength = "趋势强度"
+            sources_label = "数据来源"
+
+        lines = [
+            f"# 📊 {report_date} {title}",
+            "",
+            (
+                f"> {len(results)} stocks"
+                if report_language in {"en", "ko"}
+                else f"> 共 {len(results)} 只股票"
+            ),
+            "",
+        ]
+
+        for result in results:
+            payload = getattr(result, "data_only_report_payload", {}) or {}
+            snapshot = payload.get("market_snapshot") or {}
+            technical = payload.get("technical") or {}
+            if technical:
+                required_prices = [
+                    _safe_float(technical.get(field))
+                    for field in ("current_price", "ma5", "ma10", "ma20")
+                ]
+                if any(value is None or value <= 0 for value in required_prices):
+                    technical = {}
+            titles = payload.get("news_titles") or []
+            lines.extend([
+                f"## {self._get_display_name(result, report_language)} ({result.code})",
+                "",
+            ])
+            if titles:
+                lines.extend([f"### 📰 {news_heading}", ""])
+                lines.extend(f"- {title}" for title in titles)
+                lines.append("")
+
+            if snapshot:
+                lines.extend([
+                    f"### 📈 {labels['market_snapshot_heading']}",
+                    "",
+                    f"| {labels['close_label']} | {labels['prev_close_label']} | {labels['open_label']} | {labels['high_label']} | {labels['low_label']} | {labels['change_pct_label']} | {labels['change_amount_label']} | {labels['amplitude_label']} | {labels['volume_label']} | {labels['amount_label']} |",
+                    "|------|------|------|------|------|-------|-------|------|--------|--------|",
+                    f"| {snapshot.get('close', 'N/A')} | {snapshot.get('prev_close', 'N/A')} | {snapshot.get('open', 'N/A')} | {snapshot.get('high', 'N/A')} | {snapshot.get('low', 'N/A')} | {snapshot.get('pct_chg', 'N/A')} | {snapshot.get('change_amount', 'N/A')} | {snapshot.get('amplitude', 'N/A')} | {snapshot.get('volume', 'N/A')} | {snapshot.get('amount', 'N/A')} |",
+                    "",
+                ])
+                if "price" in snapshot:
+                    lines.extend([
+                        f"| {labels['current_price_label']} | {labels['turnover_rate_label']} | {labels['source_label']} |",
+                        "|-------|--------|----------|",
+                        f"| {snapshot.get('price', 'N/A')} | {snapshot.get('turnover_rate', 'N/A')} | {self._get_source_display_name(snapshot.get('source', 'N/A'), report_language)} |",
+                        "",
+                    ])
+
+            if technical:
+                lines.extend([f"### 📊 {technical_heading}", ""])
+                ma5 = _safe_float(technical.get("ma5"))
+                ma10 = _safe_float(technical.get("ma10"))
+                ma20 = _safe_float(technical.get("ma20"))
+                current_price = _safe_float(technical.get("current_price"))
+                trend_status = technical.get("trend_status")
+                ma_alignment = technical.get("ma_alignment")
+                if trend_status:
+                    lines.append(f"**{trend_label}**: {trend_status}")
+                if ma_alignment:
+                    lines.append(f"**{labels['ma_alignment_label']}**: {ma_alignment}")
+                if technical.get("trend_strength") not in (None, ""):
+                    lines.append(f"**{technical_strength}**: {technical.get('trend_strength')}/100")
+                lines.extend([
+                    "",
+                    f"| {labels['price_metrics_label']} | {labels['current_price_label']} |",
+                    "|---------|------|",
+                ])
+                for label, value in (
+                    (labels["current_price_label"], current_price),
+                    (labels["ma5_label"], ma5),
+                    (labels["ma10_label"], ma10),
+                    (labels["ma20_label"], ma20),
+                    (labels["bias_ma5_label"], _safe_float(technical.get("bias_ma5"))),
+                    (labels["support_level_label"], (technical.get("support_levels") or [None])[0]),
+                    (labels["resistance_level_label"], (technical.get("resistance_levels") or [None])[0]),
+                ):
+                    if value is None:
+                        continue
+                    formatted = f"{float(value):.2f}"
+                    if label == labels["bias_ma5_label"]:
+                        formatted += "%"
+                    lines.append(f"| {label} | {formatted} |")
+                volume_ratio = _safe_float(technical.get("volume_ratio_5d"))
+                volume_status = technical.get("volume_status")
+                if volume_ratio is not None or volume_status:
+                    lines.extend([
+                        "",
+                        f"**{labels['volume_label']}**: {'5日量比' if report_language == 'zh' else '5-day volume ratio'} {volume_ratio:.2f}" if volume_ratio is not None else f"**{labels['volume_label']}**: {'5日量比' if report_language == 'zh' else '5-day volume ratio'} N/A",
+                    ])
+                    if volume_status:
+                        lines[-1] += f" ({volume_status_label}: {volume_status})"
+                lines.append("")
+
+                levels = [
+                    (labels["ideal_buy_label"], ma5),
+                    (labels["secondary_buy_label"], ma10),
+                    (labels["stop_loss_label"], ma20),
+                ]
+                if any(value is not None and value > 0 for _, value in levels):
+                    lines.extend([
+                        f"### 🎯 {point_heading}",
+                        "",
+                        f"| {labels['action_points_heading']} | {labels['current_price_label']} |",
+                        "|---------|------|",
+                    ])
+                    for label, value in levels:
+                        if value is not None and value > 0:
+                            lines.append(f"| {label} | {value:.2f} |")
+                    lines.append("")
+
+            self._append_fundamental_blocks(lines, result)
+            source_labels = payload.get("source_labels") or []
+            if source_labels:
+                lines.extend([
+                    f"*📋 {sources_label}: {', '.join(str(source) for source in source_labels)}*",
+                    "",
+                ])
+            lines.extend(["---", ""])
+
+        return "\n".join(lines).rstrip() + "\n"
+
     @staticmethod
     def _escape_md(name: str) -> str:
         """Escape markdown special characters in stock names (e.g. *ST → \\*ST)."""
@@ -1272,6 +1442,14 @@ class NotificationService(
         config = get_config()
         report_language = self._get_report_language(results)
         labels = get_report_labels(report_language)
+        if results and all(
+            getattr(result, "is_model_free_report", False) for result in results
+        ):
+            return self._generate_model_free_data_report(
+                results,
+                report_date=report_date,
+                report_language=report_language,
+            )
 
         def _nlabel(en: str, zh: str, ko: str) -> str:
             if report_language == "en":
@@ -1952,6 +2130,14 @@ class NotificationService(
             report_date = datetime.now().strftime('%Y-%m-%d')
         report_language = self._get_report_language(results)
         labels = get_report_labels(report_language)
+        if results and all(
+            getattr(result, "is_model_free_report", False) for result in results
+        ):
+            return self._generate_model_free_data_report(
+                results,
+                report_date=report_date,
+                report_language=report_language,
+            )
         config = get_config()
         if getattr(config, 'report_renderer_enabled', False) and results:
             from src.services.report_renderer import render
@@ -2014,6 +2200,12 @@ class NotificationService(
         """
         report_date = report_date or datetime.now().strftime('%Y-%m-%d %H:%M')
         report_language = self._get_report_language(result)
+        if getattr(result, "is_model_free_report", False):
+            return self._generate_model_free_data_report(
+                [result],
+                report_date=report_date,
+                report_language=report_language,
+            )
         labels = get_report_labels(report_language)
         signal_text, signal_emoji, _ = self._get_signal_level(result)
         dashboard = result.dashboard if hasattr(result, 'dashboard') and result.dashboard else {}

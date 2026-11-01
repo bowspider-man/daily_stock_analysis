@@ -265,6 +265,10 @@ class StockAnalysisPipeline:
     2. 协调数据获取、存储、搜索、分析、通知等模块
     3. 实现并发控制和异常处理
     """
+
+    # This checkout is the isolated model-free report version. The legacy
+    # workflow continues to use its own checkout and remains unchanged.
+    MODEL_FREE_REPORT = True
     
     def __init__(
         self,
@@ -547,7 +551,9 @@ class StockAnalysisPipeline:
                     current_time=current_time,
                 )
             daily_market_context = (
-                None if historical_date else self._load_daily_market_context(
+                None
+                if self.MODEL_FREE_REPORT or historical_date
+                else self._load_daily_market_context(
                     market, target_date=daily_market_target_date,
                 )
             )
@@ -595,7 +601,9 @@ class StockAnalysisPipeline:
             # Step 2: 获取筹码分布 - 使用统一入口，带熔断保护
             # 指数目标跳过筹码分布（INDEX_SKIP_MODULES 能力矩阵）
             chip_data = None
-            if historical_date or us_premarket_baseline or (is_index and "chip_distribution" in INDEX_SKIP_MODULES):
+            if self.MODEL_FREE_REPORT:
+                logger.info("%s(%s) 数据报告不读取筹码数据", stock_name, code)
+            elif historical_date or us_premarket_baseline or (is_index and "chip_distribution" in INDEX_SKIP_MODULES):
                 logger.debug(f"{stock_name}({code}) 冻结基准或指数目标跳过非历史筹码分布")
             else:
                 try:
@@ -613,12 +621,16 @@ class StockAnalysisPipeline:
             # config.is_agent_available() so that users who only configured an
             # API Key for the traditional analysis path are not silently
             # switched to Agent mode (which is slower and more expensive).
-            use_agent = False if historical_date else getattr(self.config, 'agent_mode', False)
-            if not use_agent and not historical_date:
+            use_agent = (
+                False
+                if self.MODEL_FREE_REPORT or historical_date
+                else getattr(self.config, 'agent_mode', False)
+            )
+            if not self.MODEL_FREE_REPORT and not use_agent and not historical_date:
                 if self.analysis_skills:
                     use_agent = True
                     logger.info(f"{stock_name}({code}) Auto-enabled agent mode due to request skills: {self.analysis_skills}")
-            if not use_agent and not historical_date:
+            if not self.MODEL_FREE_REPORT and not use_agent and not historical_date:
                 # Auto-enable agent mode when specific skills are configured (e.g., scheduled task with strategy)
                 configured_skills = getattr(self.config, 'agent_skills', [])
                 if configured_skills and configured_skills != ['all']:
@@ -683,7 +695,7 @@ class StockAnalysisPipeline:
                     if premarket_financial_audit.get("status") == "source_verified" and isinstance(report, dict)
                     else {}
                 )
-            market_structure_context = None if historical_date else self._build_market_structure_context(
+            market_structure_context = None if (self.MODEL_FREE_REPORT or historical_date) else self._build_market_structure_context(
                 code=code,
                 stock_name=stock_name,
                 market=market,
@@ -772,28 +784,67 @@ class StockAnalysisPipeline:
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
             news_context = None
             persisted_intelligence_context = (
-                None if us_premarket_baseline or historical_date else self._load_persisted_intelligence_context(
+                None if self.MODEL_FREE_REPORT or us_premarket_baseline or historical_date else self._load_persisted_intelligence_context(
                     code=code, stock_name=stock_name, market=market or "cn",
                 )
             )
             premarket_news_audit: list[dict[str, Any]] = []
             news_result_count: Optional[int] = None
+            news_titles: list[str] = []
+            news_provider: Optional[str] = None
             self._emit_progress(46, f"{stock_name}：正在检索新闻与舆情")
             if self.search_service is not None and self.search_service.is_available:
-                logger.info(f"{stock_name}({code}) 开始多维度情报搜索...")
+                if self.MODEL_FREE_REPORT:
+                    logger.info(f"{stock_name}({code}) 开始搜索新闻标题...")
+                    response = self.search_service.search_stock_news(
+                        stock_code=("" if is_index else code),
+                        stock_name=stock_name,
+                        max_results=5,
+                    )
+                    news_result_count = len(response.results) if response.success else 0
+                    news_provider = response.provider if response.success else None
+                    news_titles = [
+                        str(item.title).strip()
+                        for item in (response.results or [])
+                        if str(getattr(item, "title", "") or "").strip()
+                    ]
+                    news_context = "\n".join(news_titles) or None
+                    if response.success and response.results:
+                        logger.info(
+                            "%s(%s) 搜索到 %d 条新闻标题 (来源: %s)",
+                            stock_name, code, len(news_titles), response.provider,
+                        )
+                        try:
+                            self.db.save_news_intel(
+                                code=code,
+                                name=stock_name,
+                                dimension="latest_news",
+                                query=response.query,
+                                response=response,
+                                query_context=self._build_query_context(query_id=query_id),
+                            )
+                        except Exception as exc:
+                            logger.warning("%s(%s) 保存新闻搜索结果失败: %s", stock_name, code, exc)
+                else:
+                    logger.info(f"{stock_name}({code}) 开始多维度情报搜索...")
 
                 # 检索已发起：此后即使一条都没拿到，也是「执行了但零命中」而非
                 # 「未执行检索」。若停留在 None，搜索源全线失败这一最该提示的场景
                 # 反而不会提示。
-                news_result_count = 0
+                if not self.MODEL_FREE_REPORT:
+                    news_result_count = 0
 
                 # 使用多维度搜索（最多5次搜索）
                 # 指数目标：查询 subject 仅用注册表中文名称，不把 canonical code /
                 # 六码机器码带入查询（Story 1.5 V7）。
-                intel_results = self.search_service.search_comprehensive_intel(
-                    stock_code=("" if is_index else code),
-                    stock_name=stock_name,
-                    max_searches=5
+                intel_results = (
+                    self.search_service.search_comprehensive_intel(
+                        stock_code=("" if is_index else code),
+                        stock_name=stock_name,
+                        max_searches=5
+                    )
+                    if not self.MODEL_FREE_REPORT
+                    else None
                 )
                 if us_premarket_baseline and intel_results:
                     from dataclasses import replace
@@ -848,7 +899,7 @@ class StockAnalysisPipeline:
 
             # Step 4.5: Social sentiment intelligence (US stocks only)
             social_evidence_context: Optional[str] = None
-            if not historical_date and not us_premarket_baseline and self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_stock_code(code):
+            if not self.MODEL_FREE_REPORT and not historical_date and not us_premarket_baseline and self.social_sentiment_service is not None and self.social_sentiment_service.is_available and is_us_stock_code(code):
                 try:
                     social_context = self.social_sentiment_service.get_social_context(code)
                     if social_context:
@@ -913,6 +964,20 @@ class StockAnalysisPipeline:
                 enhanced_context["historical_analysis_date"] = historical_date.isoformat()
             if isinstance(market_structure_context, dict) and not us_premarket_baseline:
                 enhanced_context["market_structure_context"] = market_structure_context
+
+            if self.MODEL_FREE_REPORT:
+                self._emit_progress(88, f"{stock_name}：正在整理行情与基本面报告")
+                return self._build_model_free_analysis_result(
+                    code=code,
+                    stock_name=stock_name,
+                    query_id=query_id,
+                    context=enhanced_context,
+                    trend_result=trend_result,
+                    fundamental_context=fundamental_context,
+                    news_titles=news_titles,
+                    news_provider=news_provider,
+                    report_language=report_language,
+                )
             
             # Step 7: 调用 AI 分析（传入增强的上下文和新闻）
             (
@@ -1132,6 +1197,83 @@ class StockAnalysisPipeline:
             logger.error(f"{stock_name}({code}) 分析失败: {e}")
             logger.exception(f"{stock_name}({code}) 详细错误信息:")
             return None
+
+    def _build_model_free_analysis_result(
+        self,
+        *,
+        code: str,
+        stock_name: str,
+        query_id: str,
+        context: Dict[str, Any],
+        trend_result: Optional[TrendAnalysisResult],
+        fundamental_context: Optional[Dict[str, Any]],
+        news_titles: List[str],
+        news_provider: Optional[str],
+        report_language: str,
+    ) -> AnalysisResult:
+        """Build the data-only report payload without invoking a generation model."""
+        result = AnalysisResult(
+            code=code,
+            name=stock_name,
+            sentiment_score=0,
+            trend_prediction="",
+            operation_advice="",
+            confidence_level="",
+            report_language=report_language,
+            success=True,
+            data_sources="",
+            model_used=None,
+        )
+        result.query_id = query_id
+        result.market_snapshot = self.analyzer._build_market_snapshot(context)
+        result.fundamental_context = fundamental_context
+
+        realtime = context.get("realtime") if isinstance(context.get("realtime"), dict) else {}
+        today = context.get("today") if isinstance(context.get("today"), dict) else {}
+        result.current_price = (
+            realtime.get("price")
+            if realtime.get("price") is not None
+            else today.get("close")
+        )
+        result.change_pct = (
+            realtime.get("change_pct")
+            if realtime.get("change_pct") is not None
+            else today.get("pct_chg")
+        )
+
+        trend_payload = trend_result.to_dict() if trend_result is not None else {}
+        sources: List[str] = []
+        market_snapshot = result.market_snapshot or {}
+        quote_source = market_snapshot.get("source")
+        if quote_source and str(quote_source).casefold() not in {"n/a", "unknown"}:
+            sources.append(str(quote_source))
+        today_source = today.get("data_source")
+        if today_source and str(today_source).casefold() not in {"n/a", "unknown"}:
+            sources.append(str(today_source))
+        if news_provider:
+            sources.append(str(news_provider))
+        if isinstance(fundamental_context, dict):
+            source_chain = fundamental_context.get("source_chain", [])
+            if not isinstance(source_chain, list):
+                source_chain = []
+            for item in source_chain:
+                if isinstance(item, str) and item.strip():
+                    sources.append(item.strip())
+                elif isinstance(item, dict) and item.get("provider"):
+                    outcome = str(item.get("result") or "").strip().casefold()
+                    if outcome not in {"", "not_supported", "unsupported", "failed", "empty"}:
+                        sources.append(str(item["provider"]))
+        result.data_sources = ",".join(dict.fromkeys(sources))
+        result.data_only_report_payload = {
+            "market_snapshot": market_snapshot,
+            "technical": trend_payload,
+            "news_titles": list(dict.fromkeys(news_titles)),
+            "news_provider": news_provider,
+            "market_phase": context.get("market_phase_context"),
+            "source_labels": list(dict.fromkeys(sources)),
+        }
+        result.is_model_free_report = True
+        return result
     
     def _enhance_context(
         self,
@@ -3550,10 +3692,13 @@ class StockAnalysisPipeline:
             result = self.analyze_stock(code, report_type, **analyze_kwargs)
             
             if result and result.success:
-                logger.info(
-                    f"[{code}] 分析完成: {result.operation_advice}, "
-                    f"评分 {result.sentiment_score}"
-                )
+                if getattr(result, "is_model_free_report", False):
+                    logger.info("[%s] 数据报告生成完成", code)
+                else:
+                    logger.info(
+                        f"[{code}] 分析完成: {result.operation_advice}, "
+                        f"评分 {result.sentiment_score}"
+                    )
                 
                 # 单股推送模式（#55）：每分析完一只股票立即推送
                 if single_stock_notify:

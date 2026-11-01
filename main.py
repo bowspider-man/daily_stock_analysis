@@ -1215,6 +1215,9 @@ def run_full_analysis(
         if results:
             logger.info("\n===== 分析结果摘要 =====")
             for r in sorted(results, key=lambda x: x.sentiment_score, reverse=True):
+                if getattr(r, "is_model_free_report", False):
+                    logger.info("📊 %s(%s): 数据报告已生成", r.name, r.code)
+                    continue
                 emoji = r.get_emoji()
                 logger.info(
                     f"{emoji} {r.name}({r.code}): {r.operation_advice} | "
