@@ -108,6 +108,7 @@ from src.core.trading_calendar import (
     build_market_phase_context,
     get_effective_trading_date,
     get_market_for_stock,
+    get_next_trading_date,
     get_market_now,
     is_market_open,
 )
@@ -4110,11 +4111,21 @@ class StockAnalysisPipeline:
                 snapshot = payload.get("market_snapshot") or {}
                 technical = payload.get("technical") or {}
                 resistance = next((v for v in technical.get("resistance_levels", []) if v), None)
+                market = get_market_for_stock(normalize_stock_code(result.code))
+                entry_signal_date = snapshot.get("date") or signal_date
+                execution_date = None
+                if entry_signal_date and market:
+                    try:
+                        next_session = get_next_trading_date(market, date.fromisoformat(str(entry_signal_date)))
+                        execution_date = next_session.isoformat() if next_session else None
+                    except (TypeError, ValueError):
+                        execution_date = None
                 entries.append({
                     "symbol": result.code,
                     "name": result.name,
-                    "market": get_market_for_stock(normalize_stock_code(result.code)),
-                    "signal_date": snapshot.get("date") or signal_date,
+                    "market": market,
+                    "signal_date": entry_signal_date,
+                    "execution_date": execution_date,
                     "market_snapshot": snapshot,
                     "technical": technical,
                     "price_levels": {
