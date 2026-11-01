@@ -552,7 +552,10 @@ class LongbridgeFetcher(BaseFetcher):
                             from_oauth = getattr(Config, "from_oauth", None)
                             if from_oauth is None:
                                 raise AttributeError("Config.from_oauth")
-                            lb_config = from_oauth(oauth)
+                            # Match the legacy Config path: in particular,
+                            # pass the report language so OAuth-backed content
+                            # requests do not silently use the SDK's English default.
+                            lb_config = from_oauth(oauth, **extra_kw)
                             logger.info("[Longbridge] Config.from_oauth() 创建成功")
                         except (ImportError, AttributeError):
                             oauth_error = _oauth_sdk_unavailable_error()

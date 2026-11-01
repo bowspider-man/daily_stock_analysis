@@ -651,7 +651,13 @@ class StockAnalysisPipeline:
                 "lhb",
                 "corporate_events",
             }
-            if historical_date or (is_index and INDEX_SKIP_MODULES.intersection(fundamental_modules)):
+            if historical_date and not self.MODEL_FREE_REPORT:
+                logger.debug(f"{stock_name}({code}) 历史分析跳过当前基本面聚合")
+                fundamental_context = self.fetcher_manager.build_not_supported_fundamental_context(
+                    code,
+                    "historical analysis: current fundamental snapshot skipped",
+                )
+            elif is_index and INDEX_SKIP_MODULES.intersection(fundamental_modules):
                 logger.debug(f"{stock_name}({code}) 指数目标跳过基本面聚合")
                 fundamental_context = self.fetcher_manager.build_not_supported_fundamental_context(
                     code,
@@ -791,20 +797,40 @@ class StockAnalysisPipeline:
             premarket_news_audit: list[dict[str, Any]] = []
             news_result_count: Optional[int] = None
             news_titles: list[str] = []
+            news_items: list[dict[str, str]] = []
             news_provider: Optional[str] = None
             self._emit_progress(46, f"{stock_name}：正在检索新闻与舆情")
             if self.search_service is not None and self.search_service.is_available:
                 if self.MODEL_FREE_REPORT:
                     logger.info(f"{stock_name}({code}) 开始搜索新闻标题...")
+                    news_window_end = datetime.now().date()
+                    if historical_date:
+                        logger.info(
+                            "%s(%s) 新闻发布日期筛选范围: %s 至 %s（含首尾日期）",
+                            stock_name,
+                            code,
+                            historical_date.isoformat(),
+                            news_window_end.isoformat(),
+                        )
                     response = self.search_service.search_stock_news(
                         stock_code=("" if is_index else code),
                         stock_name=stock_name,
                         max_results=5,
+                        published_from=historical_date,
+                        published_to=news_window_end if historical_date else None,
                     )
                     news_result_count = len(response.results) if response.success else 0
                     news_provider = response.provider if response.success else None
                     news_titles = [
                         str(item.title).strip()
+                        for item in (response.results or [])
+                        if str(getattr(item, "title", "") or "").strip()
+                    ]
+                    news_items = [
+                        {
+                            "title": str(item.title).strip(),
+                            "published_date": str(getattr(item, "published_date", "") or "").strip(),
+                        }
                         for item in (response.results or [])
                         if str(getattr(item, "title", "") or "").strip()
                     ]
@@ -975,6 +1001,7 @@ class StockAnalysisPipeline:
                     trend_result=trend_result,
                     fundamental_context=fundamental_context,
                     news_titles=news_titles,
+                    news_items=news_items,
                     news_provider=news_provider,
                     report_language=report_language,
                 )
@@ -1208,6 +1235,7 @@ class StockAnalysisPipeline:
         trend_result: Optional[TrendAnalysisResult],
         fundamental_context: Optional[Dict[str, Any]],
         news_titles: List[str],
+        news_items: Optional[List[Dict[str, str]]] = None,
         news_provider: Optional[str],
         report_language: str,
     ) -> AnalysisResult:
@@ -1268,6 +1296,7 @@ class StockAnalysisPipeline:
             "market_snapshot": market_snapshot,
             "technical": trend_payload,
             "news_titles": list(dict.fromkeys(news_titles)),
+            "news_items": list(news_items or []),
             "news_provider": news_provider,
             "market_phase": context.get("market_phase_context"),
             "source_labels": list(dict.fromkeys(sources)),

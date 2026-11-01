@@ -3783,14 +3783,16 @@ class SearchService:
         max_results: int,
         log_scope: str,
         keep_unknown: bool = False,
+        published_from: Optional[date] = None,
+        published_to: Optional[date] = None,
     ) -> SearchResponse:
-        """Hard-filter results by published_date recency and normalize date strings."""
+        """Hard-filter by an explicit inclusive date range or the normal recency window."""
         if not response.success or not response.results:
             return response
 
         today = datetime.now().date()
-        earliest = today - timedelta(days=max(0, int(search_days) - 1))
-        latest = today + timedelta(days=self.FUTURE_TOLERANCE_DAYS)
+        earliest = published_from or today - timedelta(days=max(0, int(search_days) - 1))
+        latest = published_to or today + timedelta(days=self.FUTURE_TOLERANCE_DAYS)
 
         filtered: List[SearchResult] = []
         dropped_unknown = 0
@@ -4114,7 +4116,9 @@ class SearchService:
         stock_code: str,
         stock_name: str,
         max_results: int = 5,
-        focus_keywords: Optional[List[str]] = None
+        focus_keywords: Optional[List[str]] = None,
+        published_from: Optional[date] = None,
+        published_to: Optional[date] = None,
     ) -> SearchResponse:
         """
         搜索股票相关新闻
@@ -4131,6 +4135,11 @@ class SearchService:
         # 策略窗口优先：ultra_short/short/medium/long = 1/3/7/30 天，
         # 并统一受 NEWS_MAX_AGE_DAYS 上限约束。
         search_days = self._effective_news_window_days()
+        if published_from is not None or published_to is not None:
+            published_from = published_from or published_to
+            published_to = published_to or published_from
+            if published_from and published_to and published_from <= published_to:
+                search_days = max(1, (published_to - published_from).days + 1)
         provider_max_results = self._provider_request_size(max_results)
         prefer_chinese = self._should_prefer_chinese_news(
             stock_code,
@@ -4195,7 +4204,8 @@ class SearchService:
         cache_key = self._cache_key(
             (
                 f"{query}|target={stock_code}:{stock_name}|"
-                f"news_pref={'zh' if prefer_chinese else 'default'}"
+                f"news_pref={'zh' if prefer_chinese else 'default'}|"
+                f"published_from={published_from or ''}|published_to={published_to or ''}"
             ),
             max_results,
             search_days,
@@ -4236,6 +4246,8 @@ class SearchService:
                     search_days=search_days,
                     max_results=provider_max_results,
                     log_scope=f"{stock_code}:Longbridge:stock_news",
+                    published_from=published_from,
+                    published_to=published_to,
                 )
                 if filtered_response.success and filtered_response.results:
                     ranked_response = self._rank_news_response(
@@ -4316,6 +4328,8 @@ class SearchService:
                     search_days=search_days,
                     max_results=provider_max_results,
                     log_scope=f"{stock_code}:{provider.name}:stock_news",
+                    published_from=published_from,
+                    published_to=published_to,
                 )
                 had_provider_success = had_provider_success or bool(response.success)
 

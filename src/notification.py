@@ -1172,6 +1172,17 @@ class NotificationService(
             payload = getattr(result, "data_only_report_payload", {}) or {}
             snapshot = payload.get("market_snapshot") or {}
             technical = payload.get("technical") or {}
+            trend_strength_value = _safe_float(technical.get("trend_strength"))
+            if trend_strength_value is None:
+                trend_strength_text = ""
+            else:
+                score = f"{trend_strength_value:g}"
+                if report_language == "en":
+                    trend_strength_text = f" — Trend Score {score}"
+                elif report_language == "ko":
+                    trend_strength_text = f" — 추세 점수 {score}점"
+                else:
+                    trend_strength_text = f"：趋势评分{score}分"
             if technical:
                 required_prices = [
                     _safe_float(technical.get(field))
@@ -1180,13 +1191,23 @@ class NotificationService(
                 if any(value is None or value <= 0 for value in required_prices):
                     technical = {}
             titles = payload.get("news_titles") or []
+            news_items = payload.get("news_items") or []
             lines.extend([
-                f"## {self._get_display_name(result, report_language)} ({result.code})",
+                f"## {self._get_display_name(result, report_language)} ({result.code}){trend_strength_text}",
                 "",
             ])
             if titles:
                 lines.extend([f"### 📰 {news_heading}", ""])
-                lines.extend(f"- {title}" for title in titles)
+                if news_items:
+                    for item in news_items:
+                        headline = str(item.get("title") or "").strip()
+                        if not headline:
+                            continue
+                        published = str(item.get("published_date") or "").strip()
+                        date_prefix = f"[{published}] " if published else ""
+                        lines.append(f"- {date_prefix}{headline}")
+                else:
+                    lines.extend(f"- {title}" for title in titles)
                 lines.append("")
 
             if snapshot:
