@@ -13,6 +13,8 @@ A股自选股智能分析系统 - 核心分析流水线
 
 import logging
 import inspect
+import hashlib
+import json
 import threading
 import time
 from pathlib import Path
@@ -799,60 +801,12 @@ class StockAnalysisPipeline:
             news_titles: list[str] = []
             news_items: list[dict[str, str]] = []
             news_provider: Optional[str] = None
-            self._emit_progress(46, f"{stock_name}：正在检索新闻与舆情")
-            if self.search_service is not None and self.search_service.is_available:
-                if self.MODEL_FREE_REPORT:
-                    logger.info(f"{stock_name}({code}) 开始搜索新闻标题...")
-                    news_window_end = datetime.now().date()
-                    if historical_date:
-                        logger.info(
-                            "%s(%s) 新闻发布日期筛选范围: %s 至 %s（含首尾日期）",
-                            stock_name,
-                            code,
-                            historical_date.isoformat(),
-                            news_window_end.isoformat(),
-                        )
-                    response = self.search_service.search_stock_news(
-                        stock_code=("" if is_index else code),
-                        stock_name=stock_name,
-                        max_results=5,
-                        published_from=historical_date,
-                        published_to=news_window_end if historical_date else None,
-                    )
-                    news_result_count = len(response.results) if response.success else 0
-                    news_provider = response.provider if response.success else None
-                    news_titles = [
-                        str(item.title).strip()
-                        for item in (response.results or [])
-                        if str(getattr(item, "title", "") or "").strip()
-                    ]
-                    news_items = [
-                        {
-                            "title": str(item.title).strip(),
-                            "published_date": str(getattr(item, "published_date", "") or "").strip(),
-                        }
-                        for item in (response.results or [])
-                        if str(getattr(item, "title", "") or "").strip()
-                    ]
-                    news_context = "\n".join(news_titles) or None
-                    if response.success and response.results:
-                        logger.info(
-                            "%s(%s) 搜索到 %d 条新闻标题 (来源: %s)",
-                            stock_name, code, len(news_titles), response.provider,
-                        )
-                        try:
-                            self.db.save_news_intel(
-                                code=code,
-                                name=stock_name,
-                                dimension="latest_news",
-                                query=response.query,
-                                response=response,
-                                query_context=self._build_query_context(query_id=query_id),
-                            )
-                        except Exception as exc:
-                            logger.warning("%s(%s) 保存新闻搜索结果失败: %s", stock_name, code, exc)
-                else:
-                    logger.info(f"{stock_name}({code}) 开始多维度情报搜索...")
+            if self.MODEL_FREE_REPORT:
+                logger.info("%s(%s) 模型免除报告：跳过新闻搜索", stock_name, code)
+            else:
+                self._emit_progress(46, f"{stock_name}：正在检索新闻与舆情")
+            if not self.MODEL_FREE_REPORT and self.search_service is not None and self.search_service.is_available:
+                logger.info(f"{stock_name}({code}) 开始多维度情报搜索...")
 
                 # 检索已发起：此后即使一条都没拿到，也是「执行了但零命中」而非
                 # 「未执行检索」。若停留在 None，搜索源全线失败这一最该提示的场景
@@ -1278,8 +1232,6 @@ class StockAnalysisPipeline:
         today_source = today.get("data_source")
         if today_source and str(today_source).casefold() not in {"n/a", "unknown"}:
             sources.append(str(today_source))
-        if news_provider:
-            sources.append(str(news_provider))
         if isinstance(fundamental_context, dict):
             source_chain = fundamental_context.get("source_chain", [])
             if not isinstance(source_chain, list):
@@ -1295,9 +1247,6 @@ class StockAnalysisPipeline:
         result.data_only_report_payload = {
             "market_snapshot": market_snapshot,
             "technical": trend_payload,
-            "news_titles": list(dict.fromkeys(news_titles)),
-            "news_items": list(news_items or []),
-            "news_provider": news_provider,
             "market_phase": context.get("market_phase_context"),
             "source_labels": list(dict.fromkeys(sources)),
         }
@@ -4122,6 +4071,7 @@ class StockAnalysisPipeline:
                 filepath = str(filepath)
                 self._last_local_report_path = filepath
                 logger.info(f"决策仪表盘日报已保存: {filepath}")
+                self._save_model_free_handoff(results, filepath)
                 return filepath
             self._last_local_report_error = "notifier returned empty report path"
             logger.error("保存本地报告失败: 通知服务未返回报告路径")
@@ -4135,11 +4085,60 @@ class StockAnalysisPipeline:
             self._last_local_report_path = fallback_path
             self._last_local_report_error = None
             logger.warning("回退保存本地报告成功: %s", fallback_path)
+            self._save_model_free_handoff(results, fallback_path)
             return fallback_path
         if self._last_local_report_error is None:
             self._last_local_report_error = "fallback local report save failed"
             return None
         return None
+
+    def _save_model_free_handoff(self, results: List[AnalysisResult], report_path: str) -> None:
+        """Write a data-only sidecar handoff from the facts present in this report."""
+        model_free = [r for r in results if getattr(r, "is_model_free_report", False)]
+        if not model_free:
+            return
+        try:
+            source_path = Path(report_path)
+            raw_markdown = source_path.read_text(encoding="utf-8")
+            signal_date = None
+            historical_date = getattr(self, "historical_analysis_date", None)
+            if historical_date:
+                signal_date = historical_date.isoformat()
+            entries = []
+            for result in model_free:
+                payload = getattr(result, "data_only_report_payload", {}) or {}
+                snapshot = payload.get("market_snapshot") or {}
+                technical = payload.get("technical") or {}
+                resistance = next((v for v in technical.get("resistance_levels", []) if v), None)
+                entries.append({
+                    "symbol": result.code,
+                    "name": result.name,
+                    "market": get_market_for_stock(normalize_stock_code(result.code)),
+                    "signal_date": snapshot.get("date") or signal_date,
+                    "market_snapshot": snapshot,
+                    "technical": technical,
+                    "price_levels": {
+                        "ideal_entry_ma5": technical.get("ma5"),
+                        "secondary_entry_ma10": technical.get("ma10"),
+                        "stop_ma20": technical.get("ma20"),
+                        "target_d_day_structural_resistance": resistance,
+                    },
+                    "fundamentals": getattr(result, "fundamental_context", None),
+                    "eligibility": "ready_for_open_review",
+                })
+            handoff = {
+                "format_version": "dsa_model_free_report_v1",
+                "validation_scope": "report_format_only",
+                "source_report_path": str(source_path),
+                "source_report_sha256": hashlib.sha256(raw_markdown.encode("utf-8")).hexdigest(),
+                "signal_date": signal_date,
+                "stocks": entries,
+            }
+            sidecar = source_path.with_name("premarket-handoff.json")
+            sidecar.write_text(json.dumps(handoff, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
+            logger.info("数据型 handoff 已保存: %s", sidecar)
+        except Exception as exc:
+            logger.warning("保存数据型 handoff 失败: %s", exc)
 
     @staticmethod
     def _default_report_filename() -> str:

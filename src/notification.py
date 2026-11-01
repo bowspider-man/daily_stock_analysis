@@ -1131,7 +1131,6 @@ class NotificationService(
 
         if report_language == "en":
             title = "Data Report"
-            news_heading = "News Headlines"
             technical_heading = "Technical Data"
             point_heading = "Formula Price Levels"
             trend_label = "Trend Status"
@@ -1140,7 +1139,6 @@ class NotificationService(
             sources_label = "Data Sources"
         elif report_language == "ko":
             title = "데이터 보고서"
-            news_heading = "뉴스 제목"
             technical_heading = "기술 데이터"
             point_heading = "계산 가격 수준"
             trend_label = "추세 상태"
@@ -1149,7 +1147,6 @@ class NotificationService(
             sources_label = "데이터 출처"
         else:
             title = "数据报告"
-            news_heading = "新闻标题"
             technical_heading = "数据透视"
             point_heading = "公式计算价位"
             trend_label = "趋势状态"
@@ -1190,26 +1187,10 @@ class NotificationService(
                 ]
                 if any(value is None or value <= 0 for value in required_prices):
                     technical = {}
-            titles = payload.get("news_titles") or []
-            news_items = payload.get("news_items") or []
             lines.extend([
                 f"## {self._get_display_name(result, report_language)} ({result.code}){trend_strength_text}",
                 "",
             ])
-            if titles:
-                lines.extend([f"### 📰 {news_heading}", ""])
-                if news_items:
-                    for item in news_items:
-                        headline = str(item.get("title") or "").strip()
-                        if not headline:
-                            continue
-                        published = str(item.get("published_date") or "").strip()
-                        date_prefix = f"[{published}] " if published else ""
-                        lines.append(f"- {date_prefix}{headline}")
-                else:
-                    lines.extend(f"- {title}" for title in titles)
-                lines.append("")
-
             if snapshot:
                 lines.extend([
                     f"### 📈 {labels['market_snapshot_heading']}",
@@ -1277,6 +1258,18 @@ class NotificationService(
                     (labels["secondary_buy_label"], ma10),
                     (labels["stop_loss_label"], ma20),
                 ]
+                resistances = [
+                    _safe_float(value)
+                    for value in (technical.get("resistance_levels") or [])
+                ]
+                target = next(
+                    (value for value in resistances if value is not None and value > (current_price or 0)),
+                    None,
+                )
+                target_label = "目标位（D日结构压力）" if report_language == "zh" else (
+                    "목표가 (D일 구조 저항)" if report_language == "ko" else "Target (D-day structural resistance)"
+                )
+                levels.append((target_label, target))
                 if any(value is not None and value > 0 for _, value in levels):
                     lines.extend([
                         f"### 🎯 {point_heading}",
@@ -1287,6 +1280,8 @@ class NotificationService(
                     for label, value in levels:
                         if value is not None and value > 0:
                             lines.append(f"| {label} | {value:.2f} |")
+                    if target is None and report_language == "zh":
+                        lines.append("| 目标位（D日结构压力） | 未识别到上方结构压力 |")
                     lines.append("")
 
             self._append_fundamental_blocks(lines, result)
